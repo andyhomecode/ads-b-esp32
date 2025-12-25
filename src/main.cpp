@@ -670,7 +670,7 @@ void loop() {
             dpAt = -1;
             blink(false);
           } else {
-            outputText = "NoFlights";
+            outputText = "........";
             dpAt = -1;
             blink(false);
           }
