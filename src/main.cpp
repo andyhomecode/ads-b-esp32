@@ -24,6 +24,9 @@
 #include <Adafruit_GFX.h>
 #include "Adafruit_LEDBackpack.h"
 
+#include <ArduinoJson.h>
+#include <map>
+
 #define SWITCH_PIN 13  // GPIO pin for mode switch
 
 #define SDA 9
@@ -68,6 +71,8 @@ int dpAt = -1;  // position of the decimal point.  -1 to turn off
 // it'll show the machine it's pinging that number of pings.
 const int siteShowCountMax = 30;
 int siteShowCount = siteShowCountMax;
+
+std::map<String, String> airlineLookup;
 
 
 const char *htmlTemplate =
@@ -480,6 +485,30 @@ void setup() {
 
   randomSeed(analogRead(0));
 
+  // Populate airline lookup
+  airlineLookup["AAL"] = "American";
+  airlineLookup["DAL"] = "Delta";
+  airlineLookup["UAL"] = "United";
+  airlineLookup["JBU"] = "JetBlue";
+  airlineLookup["SWA"] = "SWest";
+  airlineLookup["ACA"] = "AirCan";
+  airlineLookup["NKS"] = "Spirit";
+  airlineLookup["FFT"] = "Frontier";
+  airlineLookup["WJA"] = "WestJet";
+  airlineLookup["POE"] = "Porter";
+  airlineLookup["BMA"] = "BermudA";
+  airlineLookup["RPA"] = "Republic";
+  airlineLookup["EDV"] = "Delta";
+  airlineLookup["ENY"] = "American";
+  airlineLookup["PDT"] = "American";
+  airlineLookup["JIA"] = "American";
+  airlineLookup["SKW"] = "Delta";
+  airlineLookup["GJS"] = "UA/DL";
+  airlineLookup["ASH"] = "United";
+  airlineLookup["UCA"] = "United";
+  airlineLookup["JZA"] = "AirCan";
+  airlineLookup["AWI"] = "United";
+
   // setup the LED displays
 
   Wire.begin(SDA, SCL);  // SDA pin 9 and one in on LCD board, SLC pin 18 and rightmost on LCD board
@@ -542,15 +571,110 @@ void loop() {
 
       // Make HTTP GET to ADS-B API
       HTTPClient http;
-      http.begin("https://api.adsb.lol/v2/closest/40.6875/-73.9845/3");
+      http.begin("https://api.adsb.lol/v2/point/40.6875/-73.9845/3");
       int httpCode = http.GET();
       if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
         Serial.println(payload);
-        // For now, just indicate success
-        outputText = "ADS-B OK";
-        dpAt = -1;
-        blink(false);
+
+        // Parse JSON
+        JsonDocument doc; // Adjust size as needed
+        DeserializationError error = deserializeJson(doc, payload);
+        if (error) {
+          Serial.print("JSON parse error: ");
+          Serial.println(error.c_str());
+          outputText = "**JSON**";
+          dpAt = -1;
+          blink(true);
+        } else {
+          JsonArray ac = doc["ac"];
+          // Find the flight with highest lat, filtered
+          float maxLat = -1000;
+          JsonObject bestFlight;
+          for (JsonObject flight : ac) {
+            String category = flight["category"];
+            if (category == "A3") {
+              float alt = flight["alt_geom"] | 0;
+              if (alt >= 1000 && alt <= 5000) {
+                float lat = flight["lat"];
+                if (lat > maxLat) {
+                  maxLat = lat;
+                  bestFlight = flight;
+                }
+              }
+            }
+          }
+          if (!bestFlight.isNull()) {
+            String flightId = bestFlight["flight"];
+            Serial.printf("Best flight: %s\n", flightId.c_str());
+
+            // Get route
+            JsonDocument postDoc;
+            JsonArray planes = postDoc["planes"].to<JsonArray>();
+            JsonObject plane = planes.add<JsonObject>();
+            plane["callsign"] = flightId;
+            plane["lat"] = 0;
+            plane["lng"] = 0;
+            String postPayload;
+            serializeJson(postDoc, postPayload);
+
+            HTTPClient http2;
+            http2.begin("https://api.adsb.lol/api/0/routeset");
+            http2.addHeader("Content-Type", "application/json");
+            int postCode = http2.POST(postPayload);
+            String originIata = "";
+            String originName = "";
+            if (postCode == HTTP_CODE_OK) {
+              String routePayload = http2.getString();
+              Serial.println(routePayload);
+              JsonDocument routeDoc;
+              DeserializationError routeError = deserializeJson(routeDoc, routePayload);
+              if (!routeError && routeDoc.size() > 0) {
+                JsonObject route = routeDoc[0];
+                JsonArray airports = route["_airports"];
+                if (airports.size() >= 1) {
+                  JsonObject origin = airports[0];
+                  originIata = origin["iata"] | "";
+                  originName = origin["name"] | "";
+                  // Simple name cleaning: remove common words
+                  originName.replace("International", "");
+                  originName.replace("National", "");
+                  originName.replace("Ronald Reagan", "");
+                  originName.replace("Bergstrom", "");
+                  originName.replace("Douglas", "");
+                  originName.replace("Hilton Head", "");
+                  originName.replace("Hartsfield Jackson", "");
+                  originName.replace("Airport", "");
+                  originName.replace("Regional", "");
+                  originName.replace("Municipal", "");
+                  originName.replace("Field", "");
+                  originName.trim();
+                }
+              }
+            } else {
+              Serial.printf("Route POST error: %d\n", postCode);
+            }
+            http2.end();
+
+            // Get airline
+            String icao = flightId.substring(0, 3);
+            String airline = airlineLookup.count(icao) ? airlineLookup[icao] : "Unknown";
+
+            // Display
+            String displayText = flightId + " " + airline;
+            if (originIata != "") {
+              displayText += " " + originIata;
+            }
+            scrollText(displayText, displayLength, 200);
+            outputText = flightId;
+            dpAt = -1;
+            blink(false);
+          } else {
+            outputText = "NoFlights";
+            dpAt = -1;
+            blink(false);
+          }
+        }
       } else {
         Serial.printf("HTTP error: %d\n", httpCode);
         outputText = "**Error**";
