@@ -1,0 +1,105 @@
+# ADS-B ESP32 Toy
+
+A fun ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, or custom messages.
+
+## Features
+
+- **Dual 14-Segment LED Displays**: Shows scrolling text and data.
+- **WiFi Connectivity**: Connects to your WiFi network to fetch live ADS-B data.
+- **Setup Mode**: Built-in access point for easy WiFi configuration via web interface.
+- **Run Mode**: Fetches and displays flight data from api.adsb.lol.
+- **Mode Switch**: Toggle between setup and run modes with a physical switch.
+
+## Hardware Requirements
+
+- ESP32-S3 DevKitC-1 (or compatible board)
+- 2x Adafruit 14-Segment LED Backpacks (I2C addresses 0x70 and 0x71)
+- Physical switch connected to GPIO 13 (for mode selection)
+- USB cable for power and programming
+
+### Pin Connections
+
+- **I2C SDA**: GPIO 9
+- **I2C SCL**: GPIO 18
+- **Mode Switch**: GPIO 13 (INPUT_PULLUP)
+
+## Software Setup
+
+### Prerequisites
+
+- [PlatformIO](https://platformio.org/) (VS Code extension recommended)
+- USB drivers for ESP32 (usually automatic on Linux)
+
+### Installation
+
+1. Clone or download this project.
+2. Open in PlatformIO (or VS Code with PlatformIO extension).
+3. Connect your ESP32 board via USB.
+4. Build and upload the firmware:
+   - Click the "Upload" button in PlatformIO, or run `platformio run --target upload --environment freenove_esp32_s3_wroom`
+
+### Dependencies
+
+The project uses the following libraries (automatically installed via PlatformIO):
+- Adafruit GFX Library
+- Adafruit LED Backpack Library
+
+## Usage
+
+### Initial Setup
+
+1. With the mode switch in **SETUP** position (LOW), power on the device.
+2. The device creates a WiFi access point named "ADSB-Toy" (no password).
+3. Connect your phone/computer to this network.
+4. Open a browser and go to `http://192.168.4.1`.
+5. Enter your WiFi SSID and password, then save.
+6. The device will restart and attempt to connect to your WiFi.
+
+### Normal Operation
+
+1. Set the mode switch to **RUN** position (HIGH).
+2. The device will connect to WiFi and start fetching ADS-B data.
+3. Flight information scrolls on the LED displays.
+4. If WiFi fails, it displays "No Wi-fi" and restarts.
+
+### Serial Monitor
+
+- Open the serial monitor in PlatformIO at 9600 baud to see debug output.
+- Useful for troubleshooting connections and data fetching.
+
+## Configuration
+
+- **WiFi Credentials**: Stored in ESP32 flash memory. Reset by entering setup mode.
+- **API Endpoint**: Currently fetches closest flights to coordinates (40.6875, -73.9845). Modify in `main.cpp` for different locations.
+- **Display Messages**: Custom messages can be added in the `messages` array for fun scrolling text.
+
+## Troubleshooting
+
+- **No Serial Output**: Ensure correct USB port (`/dev/ttyACM0`) and board selection (`esp32-s3-devkitc-1`).
+- **WiFi Not Connecting**: Check credentials in setup mode.
+- **Displays Not Working**: Verify I2C connections and addresses.
+- **Board Not Detected**: Try a different USB port/cable or press the reset button.
+
+## Code Structure
+
+- `src/main.cpp`: Main Arduino sketch with setup, loop, and display functions.
+- `platformio.ini`: PlatformIO configuration for ESP32-S3.
+- `include/`: Header files (if any).
+- `lib/`: Local libraries (if any).
+
+## API Reference
+
+- **ADS-B Data Source**: [api.adsb.lol](https://api.adsb.lol/v2/closest/) - Open ADS-B data API.
+
+## License
+
+This project is open-source. See the original repository for licensing details.
+
+## Contributing
+
+Feel free to submit issues or pull requests for improvements!
+
+## Credits
+
+- Original code adapted from Andy Maxwell's Ping Tester project.
+- Uses open-source libraries and APIs.

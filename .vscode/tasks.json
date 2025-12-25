@@ -1,0 +1,28 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Monitor ESP32 Serial",
+			"type": "shell",
+			"command": "platformio",
+			"args": [
+				"device",
+				"monitor",
+				"--environment",
+				"freenove_esp32_s3_wroom"
+			]
+		},
+		{
+			"label": "Upload to ESP32",
+			"type": "shell",
+			"command": "platformio",
+			"args": [
+				"run",
+				"--target",
+				"upload",
+				"--environment",
+				"freenove_esp32_s3_wroom"
+			]
+		}
+	]
+}
