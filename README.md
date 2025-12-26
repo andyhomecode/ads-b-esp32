@@ -1,9 +1,12 @@
-# ADS-B ESP32 Toy
+# ADS-B ESP32
 
-A fun ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, or custom messages.
+Shows info on airline flights on approach to La Guardia that fly over Williamsburg, Brooklyn on approach to LGA that I can see out my window.
+
+An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, or custom messages.
 
 ## Features
 
+- **Flight Filtering**: Displays flights over Brooklyn at altitudes between 1000-5000 feet on approach to LGA.
 - **Dual 14-Segment LED Displays**: Shows scrolling text and data.
 - **WiFi Connectivity**: Connects to your WiFi network to fetch live ADS-B data.
 - **Setup Mode**: Built-in access point for easy WiFi configuration via web interface.
@@ -12,7 +15,7 @@ A fun ESP32-based device that displays real-time ADS-B flight data on dual 14-se
 
 ## Hardware Requirements
 
-- ESP32-S3 DevKitC-1 (or compatible board)
+- ESP32-S3 Wroom 1 Dev Board (or compatible board)
 - 2x Adafruit 14-Segment LED Backpacks (I2C addresses 0x70 and 0x71)
 - Physical switch connected to GPIO 13 (for mode selection)
 - USB cable for power and programming
@@ -27,7 +30,7 @@ A fun ESP32-based device that displays real-time ADS-B flight data on dual 14-se
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) (VS Code extension recommended)
+- [PlatformIO](https://platformio.org/) (VS Code extension recommended, built on Linux)
 - USB drivers for ESP32 (usually automatic on Linux)
 
 ### Installation
@@ -65,7 +68,7 @@ The project uses the following libraries (automatically installed via PlatformIO
 ### Serial Monitor
 
 - Open the serial monitor in PlatformIO at 9600 baud to see debug output.
-- Useful for troubleshooting connections and data fetching.
+- DOES NOT WORK ON LINUX FOR SOME REASON
 
 ## Configuration
 
@@ -75,7 +78,7 @@ The project uses the following libraries (automatically installed via PlatformIO
 
 ## Troubleshooting
 
-- **No Serial Output**: Ensure correct USB port (`/dev/ttyACM0`) and board selection (`esp32-s3-devkitc-1`).
+- **No Serial Output**: Ensure correct USB port (`/dev/ttyACM0`) and board selection (`esp32-s3-devkitc-1`). For ESP32-S3 Wroom 1, use the COM port, not USB.
 - **WiFi Not Connecting**: Check credentials in setup mode.
 - **Displays Not Working**: Verify I2C connections and addresses.
 - **Board Not Detected**: Try a different USB port/cable or press the reset button.
@@ -89,7 +92,10 @@ The project uses the following libraries (automatically installed via PlatformIO
 
 ## API Reference
 
-- **ADS-B Data Source**: [api.adsb.lol](https://api.adsb.lol/v2/closest/) - Open ADS-B data API.
+- **ADS-B Data Source**: 
+  - [api.adsb.lol/v2/point/](https://api.adsb.lol/v2/point/) - Fetches closest aircraft data.
+  - [api.adsb.lol/api/0/routeset](https://api.adsb.lol/api/0/routeset) - Retrieves flight route information.
+  - [api.adsb.lol](https://api.adsb.lol/) Open ADS-B data API docs. 
 
 ## License
 
@@ -101,5 +107,5 @@ Feel free to submit issues or pull requests for improvements!
 
 ## Credits
 
-- Original code adapted from Andy Maxwell's Ping Tester project.
+- Original code adapted from Andy's Ping Tester project.
 - Uses open-source libraries and APIs.
