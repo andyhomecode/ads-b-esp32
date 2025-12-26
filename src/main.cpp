@@ -9,8 +9,11 @@
 // 2025 12 25
 // Find airplanes lining up for landing at LGA
 // that I can see out over Brooklyn, out my window
-// for the ESP32-S2 Dev Board,
+
+// for the ESP32-S3 Wroom 1 Dev Board,
 // use the COM port, not USB
+
+// built on PlatformIO on linux
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -331,14 +334,14 @@ void setup() {
   airlineLookup["FFT"] = "Frontier";
   airlineLookup["WJA"] = "WestJet";
   airlineLookup["POE"] = "Porter";
-  airlineLookup["BMA"] = "BermudA";
+  airlineLookup["BMA"] = "Bermuda Air";
   airlineLookup["RPA"] = "Republic";
   airlineLookup["EDV"] = "Delta";
   airlineLookup["ENY"] = "American";
   airlineLookup["PDT"] = "American";
   airlineLookup["JIA"] = "American";
   airlineLookup["SKW"] = "Delta";
-  airlineLookup["GJS"] = "UA/DL";
+  airlineLookup["GJS"] = "United / Delta";
   airlineLookup["ASH"] = "United";
   airlineLookup["UCA"] = "United";
   airlineLookup["JZA"] = "Air Canada";
@@ -356,7 +359,7 @@ void setup() {
   alpha4_1.clear();
 
   // title screen
-  scrollText("ADS-B Toy by andy@maxwell.nyc", displayLength, 200);
+  scrollText("andy@maxwell.nyc", displayLength, 200);
   displayStringAcrossTwoDisplays("-=ADS-B=-");
 
   // get the stored Wifi credentials
@@ -441,6 +444,7 @@ void loop() {
           }
           if (!bestFlight.isNull()) {
             String flightId = bestFlight["flight"];
+            String alt_geom = bestFlight["alt_geom"];
             Serial.printf("Best flight: %s\n", flightId.c_str());
 
             // Get route
@@ -492,19 +496,27 @@ void loop() {
             }
             http2.end();
 
-            // Get airline
-            String icao = flightId.substring(0, 3);
-            String airline = airlineLookup.count(icao) ? airlineLookup[icao] : "Unknown";
-
-            // Display
-            String displayText = flightId + " " + airline;
-            if (originIata != "") {
-              displayText += " " + originIata + " " + originName;
-            }
-            scrollText(displayText, displayLength, 200);
             outputText = flightId;
             dpAt = -1;
             blink(false);
+
+            // show the airline code + flight number
+            displayStringAcrossTwoDisplays(outputText, dpAt);
+            // let them see it.
+            delay(1000);
+
+
+            // Get airline full name
+            String icao = flightId.substring(0, 3);
+            String airline = airlineLookup.count(icao) ? airlineLookup[icao] : "Unknown";
+
+            // Display for scroll, dropping flight since shown across 2 displays
+            // String displayText = flightId + " " + alt_geom + " ft " + airline + " " ;
+            String displayText = alt_geom + " ft " + airline + " " ;
+            if (originIata != "") {
+              displayText += " " + originIata + " " + originName;
+            }
+            scrollText(displayText, displayLength, 300); // slow it down for Michele
           } else {
             outputText = "........";
             dpAt = -1;
@@ -519,11 +531,11 @@ void loop() {
       }
       http.end();
 
-      // show the output
+      // show the output (either flight code or ... or error)
       displayStringAcrossTwoDisplays(outputText, dpAt);
 
       // let them see it.
-      delay(2000);
+      delay(1000);
 
       blink(false);
 
