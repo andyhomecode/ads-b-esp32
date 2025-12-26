@@ -1,15 +1,14 @@
-// ######                          #######
-// #     #  #  #    #   ####          #     ######   ####   #####  ######  #####
-// #     #  #  ##   #  #    #         #     #       #         #    #       #    #
-// ######   #  # #  #  #              #     #####    ####     #    #####   #    #
-// #        #  #  # #  #  ###         #     #            #    #    #       #####
-// #        #  #   ##  #    #         #     #       #    #    #    #       #   #
-// #        #  #    #   ####          #     ######   ####     #    ######  #    #
-//
-// Ping Tester
+//     _    ____  ____        ____    _     ____    _    
+//    / \  |  _ \/ ___|      | __ )  | |   / ___|  / \   
+//   / _ \ | | | \___ \ _____|  _ \  | |  | |  _  / _ \  
+//  / ___ \| |_| |___) |_____| |_) | | |__| |_| |/ ___ \ 
+// /_/   \_\____/|____/      |____/  |_____\____/_/   \_\
+
+// ads-b-esp32 
 // Andy Maxwell | andy@maxwell.nyc
-// 12/4/2024
-// Making a gift for some folks around Workday like Sam and Kalan and George
+// 2025 12 25
+// Find airplanes lining up for landing at LGA
+// that I can see out over Brooklyn, out my window
 // for the ESP32-S2 Dev Board,
 // use the COM port, not USB
 
@@ -83,7 +82,7 @@ const char *htmlTemplate =
   "</head>\n"
   "<body>\n"
   "  <h1>Andy's ADS-B Toy Config</h1>\n"
-  "  <p><a href=\"https://github.com/andyhomecode/pingtester/\">Github</a></p>\n"
+  "  <p><a href=\"https://github.com/andyhomecode/ads-b-esp32\">Github</a></p>\n"
   "  <h2>Configure WiFi</h2>\n"
   "  <form action=\"/save\" method=\"post\">\n"
   "    <label for=\"ssid\">SSID:</label><br>\n"
@@ -193,169 +192,6 @@ void blink(bool blinkOn) {
     alpha4_0.blinkRate(HT16K33_BLINK_OFF);
     alpha4_1.blinkRate(HT16K33_BLINK_OFF);
   }
-}
-
-
-void egg() {
-  // easter egg
-
-  // pop up once every hour or so
-  long tempRand = random(preferences.getInt("egg", 1800));
-
-  // TODO, add a button to turn on to make it happen
-
-  //  displayStringAcrossTwoDisplays(String(tempRand));
-  //  delay(200);
-  if (tempRand != 1) {
-    return;
-  }
-
-  // you hear the bell, you get a prize!
-
-  const String messages[] = {
-    "Hello, world.",
-    "DATA IS LIKE PEE IN THE POOL",
-    "IT'S ALWAYS DNS",
-    "Workday... AND NIGHT",
-    "EVERYTHING IS AN OBJECT",
-    "ASSETS = LIABILITIES + EQUITY",
-    "DEBUGGER?? I USE PRINT",
-    "It works on my machine.",
-    "Pleasanton Marriott is better than the AC.",
-    "Don't take BART from SFO.",
-    "LGA, JFA, EWR, LAS, SFO, MIA, PDX, DFW, MCO, ORD",
-    "I'm afraid I can't do that, Dave.",
-    "Are you Sarah Connor?",
-    "I'VE GOT 1099 PROBLEMS, BUT A W-2 AIN'T ONE",
-    "V = I x R",
-    "F = M x A",
-    "sudo make me a sandwich",
-    "The bathroom code is 1234*",
-    "sudo rm -fr /",
-    "[object Object]",
-    "There's no place like 127.0.0.1",
-    "AI stole my job.",
-    "Recursion. See recursion.",
-    "Error 418: I'm a teapot.",
-    "There are 10 types of people.",
-    "Bugs everywhere.",
-    "1/0",
-    "NaN",
-    "#REF",
-    "404 Brain Not Found",
-    "500 Coffee Required",
-    "418 I’m a Teapot",
-    "200 OK-ish",
-    "302 Found (Under Desk)",
-    "451 Redacted by Legal",
-    "503 Out to Lunch",
-    "520 Unknown Unknown",
-    "666 Daemon Not Responding",
-    "1337 Hax Detected",
-    "[object Object]",
-    "NaN is NaN",
-    "undefined is not a function",
-    "null pointer exception",
-    "true == \'true\'",
-    "while(true) { }",
-    "sudo make me a sandwich",
-    "rm -rf /",
-    "It compiles! Ship it!",
-    "Segmentation fault (core dumped)",
-    "0xDEADBEEF",
-    "0xC0FFEE",
-    "0xBADF00D",
-    "0xBADC0DE",
-    "0xFEEDFACE",
-    "0xDEFEC8ED",
-    "0xF00DBABE",
-    "0xABADBABE",
-    "101010 (42)",
-    "0b11111111",
-    "Hello, World!",
-    "EOF reached",
-    "Insert coin",
-    "Loading… still",
-    "PEBKAC error",
-    "ID10T error",
-    "Y2K compliant",
-    "Works on my machine",
-    "Feature, not a bug",
-    "Skynet initializing…",
-    "All your base are belong to us",
-    "Don’t Panic (42)",
-    "There is no spoon",
-    "Use the Force();",
-    "Winter is coding",
-    "Hack the planet!",
-    "Expecto Patronum();",
-    "Open the pod bay doors",
-    "Resistance is futile",
-    "IP conflict detected",
-    "DHCP lease expired",
-    "WiFi? Why not?",
-    "Ping 127.0.0.1",
-    "Timeout exceeded",
-    "Packet dropped",
-    "DNS not found",
-    "ARP! ARP!",
-    "Hello from 127.0.0.1",
-    "Routing… eventually",
-    "RAID rebuild in progress",
-    "Backup? What backup?",
-    "Kernel panic!",
-    "Zombie process detected",
-    "Disk full… again",
-    "Login as root? Brave.",
-    "chmod 777 EVERYTHING",
-    "Reboot fixes it",
-    "Have you tried turning it off…",
-    "…and on again?",
-    "ERROR: Coffee empty",
-    "WARNING: Sarcasm detected",
-    "ALERT: Keyboard not found",
-    "Insert brain to continue",
-    "BEEP BOOP BEEP",
-    "User not in sudoers",
-    "Press F to pay respects",
-    "SyntaxError: Unexpected token",
-    "CTRL+ALT+DEL to continue",
-    "System32 deleted successfully",
-    "Ping of death",
-    "Kernel not included",
-    "Infinite loop engaged",
-    "127.0.0.1 sweet 127.0.0.1",
-    "Console.log('lol')",
-    "Commit early, commit often",
-    "Merge conflict incoming",
-    "Hello from the other side()",
-    "printf(\"Oops\\n\")",
-    "Error loading error message",
-    "Abort, Retry, Fail?",
-    "Stack overflow!",
-    "Out of cheese error",
-    "Divide by cucumber",
-    "Schrodinger’s cat alive()",
-    "Schrodinger’s cat dead()",
-    "sudo rm universe",
-    "sudo apt-get happiness",
-    "42 is the answer",
-    "Insert witty error here"
-};
-
-  // Arrays of strings areweird in C so yeah, I'm hard coding the length
-  // just be glad I didn't use the weird Harvard Architecture PROGMEM
-  const int numMessages = 128;
-  displayStringAcrossTwoDisplays("********");
-  delay(1000);
-  displayStringAcrossTwoDisplays("- ANDY -");
-  delay(2000);
-  displayStringAcrossTwoDisplays("- SAYS -");
-  delay(2000);
-
-  scrollText(messages[random(0, numMessages - 1)], 8, 200);
-  displayStringAcrossTwoDisplays("********");
-  delay(1000);
 }
 
 
@@ -481,7 +317,6 @@ void setup() {
   pinMode(SWITCH_PIN, INPUT_PULLUP);  // enable the setup vs run switch
 
   Serial.print("in Setup\n");
-  Serial.print("Source at:\nhttps://github.com/andyhomecode/pingtester\n");
 
   randomSeed(analogRead(0));
 
@@ -490,8 +325,8 @@ void setup() {
   airlineLookup["DAL"] = "Delta";
   airlineLookup["UAL"] = "United";
   airlineLookup["JBU"] = "JetBlue";
-  airlineLookup["SWA"] = "SWest";
-  airlineLookup["ACA"] = "AirCan";
+  airlineLookup["SWA"] = "South West";
+  airlineLookup["ACA"] = "Air Canada";
   airlineLookup["NKS"] = "Spirit";
   airlineLookup["FFT"] = "Frontier";
   airlineLookup["WJA"] = "WestJet";
@@ -506,7 +341,7 @@ void setup() {
   airlineLookup["GJS"] = "UA/DL";
   airlineLookup["ASH"] = "United";
   airlineLookup["UCA"] = "United";
-  airlineLookup["JZA"] = "AirCan";
+  airlineLookup["JZA"] = "Air Canada";
   airlineLookup["AWI"] = "United";
 
   // setup the LED displays
@@ -521,7 +356,7 @@ void setup() {
   alpha4_1.clear();
 
   // title screen
-  scrollText("ADS-B Toy by andy.maxwell@workday.com", displayLength, 200);
+  scrollText("ADS-B Toy by andy@maxwell.nyc", displayLength, 200);
   displayStringAcrossTwoDisplays("-=ADS-B=-");
 
   // get the stored Wifi credentials
@@ -612,6 +447,7 @@ void loop() {
             JsonDocument postDoc;
             JsonArray planes = postDoc["planes"].to<JsonArray>();
             JsonObject plane = planes.add<JsonObject>();
+            flightId.trim();
             plane["callsign"] = flightId;
             plane["lat"] = 0;
             plane["lng"] = 0;
@@ -635,7 +471,7 @@ void loop() {
                 if (airports.size() >= 1) {
                   JsonObject origin = airports[0];
                   originIata = origin["iata"] | "";
-                  originName = origin["name"] | "";
+                  originName = origin["location"] | "";
                   // Simple name cleaning: remove common words
                   originName.replace("International", "");
                   originName.replace("National", "");
@@ -663,7 +499,7 @@ void loop() {
             // Display
             String displayText = flightId + " " + airline;
             if (originIata != "") {
-              displayText += " " + originIata;
+              displayText += " " + originIata + " " + originName;
             }
             scrollText(displayText, displayLength, 200);
             outputText = flightId;
