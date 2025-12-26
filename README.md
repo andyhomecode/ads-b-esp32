@@ -2,16 +2,16 @@
 
 Shows info on airline flights on approach to La Guardia that fly over Williamsburg, Brooklyn on approach to LGA that I can see out my window.
 
-An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, or custom messages.
+An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airports.
 
 ## Features
 
 - **Flight Filtering**: Displays flights over Brooklyn at altitudes between 1000-5000 feet on approach to LGA.
+- **Code -> English lookups**: converts ICAC and airline codes to english
 - **Dual 14-Segment LED Displays**: Shows scrolling text and data.
 - **WiFi Connectivity**: Connects to your WiFi network to fetch live ADS-B data.
-- **Setup Mode**: Built-in access point for easy WiFi configuration via web interface.
-- **Run Mode**: Fetches and displays flight data from api.adsb.lol.
-- **Mode Switch**: Toggle between setup and run modes with a physical switch.
+- **Setup Mode**: Built-in access point for easy WiFi configuration via web interface selectable by switch.
+- **Run Mode**: does it's little thing. 
 
 ## Hardware Requirements
 
@@ -62,7 +62,7 @@ The project uses the following libraries (automatically installed via PlatformIO
 
 1. Set the mode switch to **RUN** position (HIGH).
 2. The device will connect to WiFi and start fetching ADS-B data.
-3. Flight information scrolls on the LED displays.
+3. Flight information scrolls on the LED displays, showing flight number, altitude, aircraft type, airline, and origin airport.
 4. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
@@ -107,5 +107,6 @@ Feel free to submit issues or pull requests for improvements!
 
 ## Credits
 
-- Original code adapted from Andy's Ping Tester project.
+- test harness in python to develop API calls: https://github.com/andyhomecode/adsb-lga
+- ESP32 code reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.
