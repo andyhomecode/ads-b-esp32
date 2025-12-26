@@ -74,18 +74,20 @@ int dpAt = -1;  // position of the decimal point.  -1 to turn off
 const int siteShowCountMax = 30;
 int siteShowCount = siteShowCountMax;
 
+// lookup tables for airline  and aircraft type long names
 std::map<String, String> airlineLookup;
+std::map<String, String> icacoLookup;
 
 
 const char *htmlTemplate =
   "<!DOCTYPE html>\n"
   "<html>\n"
   "<head>\n"
-  "  <title>ADS-B Toy Config</title>\n"
+  "  <title>ADS-B-ESP32 Config</title>\n"
   "</head>\n"
   "<body>\n"
-  "  <h1>Andy's ADS-B Toy Config</h1>\n"
-  "  <p><a href=\"https://github.com/andyhomecode/ads-b-esp32\">Github</a></p>\n"
+  "  <h1>Andy's ADS-B-ESP32 WIFI Config</h1>\n"
+  "  <p><a href=\"https://github.com/andyhomecode/ads-b-esp32\">https://github.com/andyhomecode/ads-b-esp32</a></p>\n"
   "  <h2>Configure WiFi</h2>\n"
   "  <form action=\"/save\" method=\"post\">\n"
   "    <label for=\"ssid\">SSID:</label><br>\n"
@@ -230,7 +232,7 @@ bool connectToWiFi(const char *ssid, const char *password) {
 }
 
 void startAccessPoint() {
-  const char *apSSID = "ADSB-Toy";
+  const char *apSSID = "ADSB-ESP32-SETUP";
   const char *apPassword = "";  // no password,
                                 //the Wifi AP is only on when the switch is in SETUP,
                                 // and with Arduino's Harvard architecture there's very little attack surface for overflows or other such shenanigans
@@ -240,7 +242,7 @@ void startAccessPoint() {
     ESP.restart();
   }
 
-  scrollText("Connect to PingToy...", displayLength, 200);
+  scrollText("Connect to ADSB-ESP32...", displayLength, 200);
 
   WiFi.softAP(apSSID, apPassword);
   IPAddress IP = WiFi.softAPIP();
@@ -271,12 +273,14 @@ void startAccessPoint() {
     server.send(200, "text/html", htmlPage);
   });
 
+
+  // preferences saves wifi creds to non-volatile memory on the ESP32 
   server.on("/save", HTTP_POST, []() {
     if (server.hasArg("ssid") && server.hasArg("password")) {
       preferences.putString("ssid", server.arg("ssid"));
       preferences.putString("password", server.arg("password"));
 
-      server.send(200, "text/html", "<h1>Credentials Saved.</h1><p>Disconnect from PingToy Wi-Fi</p>");  // add comment for IP saved
+      server.send(200, "text/html", "<h1>Credentials Saved.</h1><p>Disconnect from setup Wi-Fi and flip switch to RUN. And watch some planes!</p>"); 
       delay(1000);
       ESP.restart();
     } else {
@@ -346,6 +350,86 @@ void setup() {
   airlineLookup["UCA"] = "United";
   airlineLookup["JZA"] = "Air Canada";
   airlineLookup["AWI"] = "United";
+
+  // setup aircraft type lookup
+  icacoLookup["A19N"] = "Airbus A319neo";
+  icacoLookup["A20N"] = "Airbus A320neo";
+  icacoLookup["A21N"] = "Airbus A321neo";
+  icacoLookup["A221"] = "Airbus A220-100";
+  icacoLookup["A223"] = "Airbus A220-300";
+  icacoLookup["A306"] = "Airbus A300-600";
+  icacoLookup["A310"] = "Airbus A310";
+  icacoLookup["A318"] = "Airbus A318";
+  icacoLookup["A319"] = "Airbus A319";
+  icacoLookup["A320"] = "Airbus A320";
+  icacoLookup["A321"] = "Airbus A321";
+  icacoLookup["A332"] = "Airbus A330-200";
+  icacoLookup["A333"] = "Airbus A330-300";
+  icacoLookup["A338"] = "Airbus A330-800";
+  icacoLookup["A339"] = "Airbus A330-900";
+  icacoLookup["A343"] = "Airbus A340-300";
+  icacoLookup["A346"] = "Airbus A340-600";
+  icacoLookup["A359"] = "Airbus A350-900";
+  icacoLookup["A35K"] = "Airbus A350-1000";
+  icacoLookup["A388"] = "Airbus A380-800";
+  icacoLookup["AT43"] = "ATR 42-300";
+  icacoLookup["AT45"] = "ATR 42-500";
+  icacoLookup["AT46"] = "ATR 42-600";
+  icacoLookup["AT72"] = "ATR 72-200";
+  icacoLookup["AT75"] = "ATR 72-500";
+  icacoLookup["AT76"] = "ATR 72-600";
+  icacoLookup["B37M"] = "Boeing 737 MAX 7";
+  icacoLookup["B38M"] = "Boeing 737 MAX 8";
+  icacoLookup["B39M"] = "Boeing 737 MAX 9";
+  icacoLookup["B3XM"] = "Boeing 737 MAX 10";
+  icacoLookup["B712"] = "Boeing 717-200";
+  icacoLookup["B737"] = "Boeing 737-700";
+  icacoLookup["B738"] = "Boeing 737-800";
+  icacoLookup["B739"] = "Boeing 737-900";
+  icacoLookup["B744"] = "Boeing 747-400";
+  icacoLookup["B748"] = "Boeing 747-8";
+  icacoLookup["B752"] = "Boeing 757-200";
+  icacoLookup["B753"] = "Boeing 757-300";
+  icacoLookup["B762"] = "Boeing 767-200";
+  icacoLookup["B763"] = "Boeing 767-300";
+  icacoLookup["B764"] = "Boeing 767-400";
+  icacoLookup["B772"] = "Boeing 777-200";
+  icacoLookup["B77L"] = "Boeing 777-200LR";
+  icacoLookup["B77W"] = "Boeing 777-300ER";
+  icacoLookup["B779"] = "Boeing 777-9";
+  icacoLookup["B788"] = "Boeing 787-8";
+  icacoLookup["B789"] = "Boeing 787-9";
+  icacoLookup["B78X"] = "Boeing 787-10";
+  icacoLookup["BCS1"] = "Bombardier CS100 (A221)";
+  icacoLookup["BCS3"] = "Bombardier CS300 (A223)";
+  icacoLookup["BE20"] = "Beechcraft Super King Air 200";
+  icacoLookup["B350"] = "Beechcraft King Air 350";
+  icacoLookup["C172"] = "Cessna 172 Skyhawk";
+  icacoLookup["C182"] = "Cessna 182 Skylane";
+  icacoLookup["C208"] = "Cessna 208 Caravan";
+  icacoLookup["C525"] = "Cessna CitationJet";
+  icacoLookup["C56X"] = "Cessna Citation Excel";
+  icacoLookup["CRJ1"] = "Bombardier CRJ-100";
+  icacoLookup["CRJ2"] = "Bombardier CRJ-200";
+  icacoLookup["CRJ7"] = "Bombardier CRJ-700";
+  icacoLookup["CRJ9"] = "Bombardier CRJ-900";
+  icacoLookup["CRJX"] = "Bombardier CRJ-1000";
+  icacoLookup["DH8C"] = "De Havilland Dash 8 Q300";
+  icacoLookup["DH8D"] = "De Havilland Dash 8 Q400";
+  icacoLookup["DHC6"] = "De Havilland Twin Otter";
+  icacoLookup["E135"] = "Embraer ERJ-135";
+  icacoLookup["E145"] = "Embraer ERJ-145";
+  icacoLookup["E170"] = "Embraer E170";
+  icacoLookup["E175"] = "Embraer E175";
+  icacoLookup["E75L"] = "Embraer E175 Long Wing";
+  icacoLookup["E190"] = "Embraer E190";
+  icacoLookup["E195"] = "Embraer E195";
+  icacoLookup["E290"] = "Embraer E190-E2";
+  icacoLookup["E295"] = "Embraer E195-E2";
+  icacoLookup["GLF5"] = "Gulfstream V";
+  icacoLookup["GLF6"] = "Gulfstream G650";
+  icacoLookup["MD88"] = "Mad Dog MD-88";
+  icacoLookup["PC12"] = "Pilatus PC-12";
 
   // setup the LED displays
 
@@ -445,6 +529,7 @@ void loop() {
           if (!bestFlight.isNull()) {
             String flightId = bestFlight["flight"];
             String alt_geom = bestFlight["alt_geom"];
+            String icaco = bestFlight["t"];
             Serial.printf("Best flight: %s\n", flightId.c_str());
 
             // Get route
@@ -507,12 +592,13 @@ void loop() {
 
 
             // Get airline full name
-            String icao = flightId.substring(0, 3);
-            String airline = airlineLookup.count(icao) ? airlineLookup[icao] : "Unknown";
+            String airlineCode = flightId.substring(0, 3);
+            String airline = airlineLookup.count(airlineCode) ? airlineLookup[airlineCode] : "Unknown";
+            String aircraftType = icacoLookup.count(icaco) ? icacoLookup[icaco] : "Plane";
 
             // Display for scroll, dropping flight since shown across 2 displays
             // String displayText = flightId + " " + alt_geom + " ft " + airline + " " ;
-            String displayText = alt_geom + " ft " + airline + " " ;
+            String displayText = alt_geom + " ft " + aircraftType + " " +  airline + " " ;
             if (originIata != "") {
               displayText += " " + originIata + " " + originName;
             }

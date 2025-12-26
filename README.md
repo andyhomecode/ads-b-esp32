@@ -52,9 +52,9 @@ The project uses the following libraries (automatically installed via PlatformIO
 ### Initial Setup
 
 1. With the mode switch in **SETUP** position (LOW), power on the device.
-2. The device creates a WiFi access point named "ADSB-Toy" (no password).
+2. The device creates a WiFi access point named "ADSB-ESP32-SETUP" (no password).
 3. Connect your phone/computer to this network.
-4. Open a browser and go to `http://192.168.4.1`.
+4. Open a browser and go to `http://192.168.4.1` or whatever IP is shown.  HTTP only. No HTTPS.
 5. Enter your WiFi SSID and password, then save.
 6. The device will restart and attempt to connect to your WiFi.
 
