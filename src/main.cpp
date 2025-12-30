@@ -38,10 +38,6 @@
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 alpha4_0 = Adafruit_AlphaNum4();
 
-const int displayLength = 8;
-
-
-// stand up the web server so we can config the settings
 WebServer server(80);
 DNSServer dnsServer;
 
@@ -64,21 +60,11 @@ Preferences preferences;
 bool isConnected = false;  // global variable to show WiFi state
 
 
-// global output string to have consistency across runs
-String outputText = "<------>";  // the output to show on the display, preseve between loops.
-
-int dpAt = -1;  // position of the decimal point.  -1 to turn off
-
-// how many times since I showed the site address I'm pinging
-// it'll show the machine it's pinging that number of pings.
-const int siteShowCountMax = 30;
-int siteShowCount = siteShowCountMax;
-
 // lookup tables for airline  and aircraft type long names
 std::map<String, String> airlineLookup;
 std::map<String, String> icacoLookup;
 
-
+// HTML template for the configuration page
 const char *htmlTemplate =
   "<!DOCTYPE html>\n"
   "<html>\n"
@@ -100,52 +86,19 @@ const char *htmlTemplate =
   "</html>\n";
 
 
+//      _ _           _             
+//   __| (_)___ _ __ | | __ _ _   _ 
+//  / _` | / __| '_ \| |/ _` | | | |
+// | (_| | \__ \ |_) | | (_| | |_| |
+//  \__,_|_|___/ .__/|_|\__,_|\__, |
+//             |_|            |___/ 
+  
 
-
-
-
-void padString(char *str, int maxLength) {
-  // straight from ChatGPT, baby.  It's a good Jr Programmer.
-
-  int len = strlen(str);
-
-  // If the string is longer than maxLength, truncate it
-  if (len > maxLength) {
-    str[maxLength] = '\0';  // Cut off at maxLength
-    return;
-  }
-
-  // If shorter, pad with spaces
-  int padSize = maxLength - len;
-  char temp[maxLength + 1];  // Temporary buffer
-
-  // Fill with spaces
-  memset(temp, ' ', padSize);
-
-  // Copy original string to the end of the temp buffer
-  strcpy(temp + padSize, str);
-
-  // Copy back to original string
-  strncpy(str, temp, maxLength);
-  str[maxLength] = '\0';  // Ensure null termination
-}
-
-//  ____  _           _
-// |  _ \(_)___ _ __ | | __ _ _   _
-// | | | | / __| '_ \| |/ _` | | | |
-// | |_| | \__ \ |_) | | (_| | |_| |
-// |____/|_|___/ .__/|_|\__,_|\__, |
-//             |_|            |___/
-
-
-// Function to display a string across two displays
 void displayStringAcrossTwoDisplays(String text, int dPLocation = -1) {
 
   // add spaces to the end so we don't get null
   // yes, I know this is a terrible hack, and it shouldn't happen,
   text += "        ";
-
-
 
   // Clear both displays
   alpha4_0.clear();
@@ -176,14 +129,22 @@ void displayStringAcrossTwoDisplays(String text, int dPLocation = -1) {
 
 
 
-void scrollText(String text, int displayWidth, int delayTime) {
-  String paddedText = "        " + text + "        ";  // Pad with spaces front and back for smooth intro and exit
-  int textLength = paddedText.length();
+void displayText(String text, int dpLocation = -1) {
+  if (text.length() <= 8) {
+    displayStringAcrossTwoDisplays(text, dpLocation);
+    delay(2000);  // Wait 2 seconds
+  } else {
+    // Show first 8 characters
+    displayStringAcrossTwoDisplays(text.substring(0, 8), dpLocation);
+    delay(2000);  // Wait 2 seconds
 
-  for (int i = 0; i <= textLength - displayWidth; i++) {
-    String frame = paddedText.substring(i, i + displayWidth);
-    displayStringAcrossTwoDisplays(frame);
-    delay(delayTime);
+    // Scroll until the last character is in the right-most position
+    for (int i = 1; i <= text.length() - 8; i++) {
+      String frame = text.substring(i, i + 8);
+      displayStringAcrossTwoDisplays(frame, -1);  // No decimal point during scroll
+      delay(200);  // Delay between scroll frames
+    }
+    delay(1000);  // Pause for 1 second at the end
   }
 }
 
@@ -218,21 +179,21 @@ bool connectToWiFi(const char *ssid, const char *password) {
 
     char tempOut[20];
     sprintf(tempOut, "IP %s", WiFi.localIP().toString().c_str());
-    scrollText(tempOut, displayLength, 200);
+    displayText(tempOut);
     return true;
   } else {
     Serial.println("\nFailed to connect.");
 
     char tempOut[20];
     for (int i = 0; i < 3; i++)
-      scrollText("Wi-Fi Failed to Connect", displayLength, 200);
+      displayText("Wi-Fi Failed to Connect");
 
     return false;
   }
 }
 
 void startAccessPoint() {
-  const char *apSSID = "ADSB-ESP32-SETUP";
+  const char *apSSID = "ADSB-ESP32";
   const char *apPassword = "";  // no password,
                                 //the Wifi AP is only on when the switch is in SETUP,
                                 // and with Arduino's Harvard architecture there's very little attack surface for overflows or other such shenanigans
@@ -242,7 +203,7 @@ void startAccessPoint() {
     ESP.restart();
   }
 
-  scrollText("Connect to ADSB-ESP32...", displayLength, 200);
+  displayText("Connect to ADSB-ESP32...");
 
   WiFi.softAP(apSSID, apPassword);
   IPAddress IP = WiFi.softAPIP();
@@ -252,7 +213,7 @@ void startAccessPoint() {
   sprintf(tempOut, "IP %s", IP.toString());
 
   for (int i = 0; i < 3; i++)
-    scrollText(tempOut, displayLength, 200);
+    displayText(tempOut);
 
   dnsServer.start(53, "*", IP);
 
@@ -296,12 +257,12 @@ void startAccessPoint() {
     // did someone flip the switch to Run from Setup?
     if (digitalRead(SWITCH_PIN) == HIGH) {
       // let them know and reboot.
-      displayStringAcrossTwoDisplays("-REBOOT-");
+      displayText("-REBOOT-");
       delay(300);
       ESP.restart();
     }
 
-    displayStringAcrossTwoDisplays("-Setup-");
+    displayText("-Setup-");
     dnsServer.processNextRequest();
     server.handleClient();
   }
@@ -324,8 +285,6 @@ void setup() {
   pinMode(SWITCH_PIN, INPUT_PULLUP);  // enable the setup vs run switch
 
   Serial.print("in Setup\n");
-
-  randomSeed(analogRead(0));
 
   // Populate airline lookup
   airlineLookup["AAL"] = "American";
@@ -351,7 +310,7 @@ void setup() {
   airlineLookup["JZA"] = "Air Canada";
   airlineLookup["AWI"] = "United";
 
-  // setup aircraft type lookup
+  // what kind of birds are indigenous to Queens?
   icacoLookup["A19N"] = "Airbus A319neo";
   icacoLookup["A20N"] = "Airbus A320neo";
   icacoLookup["A21N"] = "Airbus A321neo";
@@ -443,8 +402,9 @@ void setup() {
   alpha4_1.clear();
 
   // title screen
-  scrollText("andy@maxwell.nyc", displayLength, 200);
-  displayStringAcrossTwoDisplays("-=ADS-B=-");
+  displayText("andy@maxwell.nyc");
+  displayText("=ADS-B=");
+  displayText(" V 1.0");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -454,10 +414,8 @@ void setup() {
   // If Setup switch is in RUN, try to connect to WiFi using stored creds
   if (digitalRead(SWITCH_PIN) == HIGH && connectToWiFi(ssid.c_str(), password.c_str())) {
     isConnected = true;
-    // startServer();  // used to setup the destination to ping
   } else {
     isConnected = false;
-    // startAccessPoint();  // used ot setup the WiFi connection and destination to ping
   }
 }
 
@@ -465,31 +423,43 @@ void loop() {
 
   Serial.println("Start of loop");
 
-  char outputChar[20] = "xxxxxxx";  // local temp output for the loop
-
 
   // check to see if the mode switch is set to SETUP
   if (digitalRead(SWITCH_PIN) == LOW) {
     // we're in setup mode
 
     // so show the web server and handle it.
-    displayStringAcrossTwoDisplays("*Setup*");
+    displayText("*Setup*");
     startAccessPoint();  // we're not coming back from there.  It starts the wifi access point and web server.
   } else {
 
 
     if (WiFi.status() != WL_CONNECTED) {
       // ruh roh.  Not connected to wi-fi.
-      displayStringAcrossTwoDisplays("No Wi-fi");
-      delay(1000);
+      displayText("No Wi-fi");
       ESP.restart();  // maybe better luck next time?
     }
 
     if (isConnected) {
-      // we're on wifi.  good deal
-      Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+                                      
+      // __|__
+      // \___/
+      //  | |
+      //  | |
+      // _|_|______________
+      //         /|\
+      //       */ | \*
+      //       / -+- \
+      //   ---o--(_)--o---
+      //     /  0 " 0  \
+      //   */     |     \*
+      //   /      |      \
+      // */       |       \*
 
-      displayStringAcrossTwoDisplays(outputText, dpAt);  // show the last output
+      // Here is the meat of the program
+      // - call the APIs
+      // - format the output
+      // - show it
 
       // Make HTTP GET to ADS-B API
       HTTPClient http;
@@ -505,8 +475,7 @@ void loop() {
         if (error) {
           Serial.print("JSON parse error: ");
           Serial.println(error.c_str());
-          outputText = "**JSON**";
-          dpAt = -1;
+          displayText("**JSON Error**");
           blink(true);
         } else {
           JsonArray ac = doc["ac"];
@@ -557,8 +526,13 @@ void loop() {
               if (!routeError && routeDoc.size() > 0) {
                 JsonObject route = routeDoc[0];
                 JsonArray airports = route["_airports"];
-                if (airports.size() >= 1) {
-                  JsonObject origin = airports[0];
+                if (airports.size() >= 2) {
+                  JsonObject origin;
+                  if (airports.size() == 3) {
+                    origin = airports[1];  // middle airport for round-trip routes
+                  } else {
+                    origin = airports[0];  // first airport for direct routes
+                  }
                   originIata = origin["iata"] | "";
                   originName = origin["location"] | "";
                   // Simple name cleaning: remove common words
@@ -581,56 +555,70 @@ void loop() {
             }
             http2.end();
 
-            outputText = flightId;
-            dpAt = -1;
-            blink(false);
+            // Separate airline code and flight number with space
+            String airlineCodePart = flightId.substring(0, 3);
+            String flightNum = flightId.substring(3);
+            String flightText = airlineCodePart + " " + flightNum;
 
+            blink(false);
             // show the airline code + flight number
-            displayStringAcrossTwoDisplays(outputText, dpAt);
-            // let them see it.
-            delay(1000);
+            displayText(flightText);
 
 
             // Get airline full name
             String airlineCode = flightId.substring(0, 3);
             String airline = airlineLookup.count(airlineCode) ? airlineLookup[airlineCode] : "Unknown";
+            
+            displayText(airline);
+            
+            
             String aircraftType = icacoLookup.count(icaco) ? icacoLookup[icaco] : "Plane";
 
-            // Display for scroll, dropping flight since shown across 2 displays
-            // String displayText = flightId + " " + alt_geom + " ft " + airline + " " ;
-            String displayText = alt_geom + " ft " + aircraftType + " " +  airline + " " ;
-            if (originIata != "") {
-              displayText += " " + originIata + " " + originName;
+            displayText(aircraftType);
+
+            displayText(alt_geom + " ft");
+
+            if (originIata != "" && originIata != "LGA") {
+              displayText(originIata + " " + originName);
             }
-            scrollText(displayText, displayLength, 300); // slow it down for Michele
+
+            displayText(flightText); // show it again before loading the next flight.
+
           } else {
-            outputText = "........";
-            dpAt = -1;
+            // no planes :(
+            displayText("........");
             blink(false);
           }
         }
       } else {
         Serial.printf("HTTP error: %d\n", httpCode);
-        outputText = "**Error**";
-        dpAt = -1;
+        displayText("HTTP error: " + String(httpCode));
         blink(true);
+        ESP.restart(); // oh well
       }
       http.end();
 
-      // show the output (either flight code or ... or error)
-      displayStringAcrossTwoDisplays(outputText, dpAt);
-
-      // let them see it.
-      delay(1000);
-
-      blink(false);
-
-      // format for display on LED or servo.
     } else {
       Serial.println("Not connected to Wi-Fi.");
-      displayStringAcrossTwoDisplays("No Wi-fi");
-      delay(1000);
-      ESP.restart();  // maybe better luck next time?
+      displayText("No Wi-fi");
+      ESP.restart();  
+      //
+      //
+      //
+      //  .-------------------.              ___
+      // ( Have we landed yet? )            /  /]
+      //  `-------------.   ,-'            /  / ]
+      //                 \ |      _____,. '  /__]
+      //              )   \|   ,-'             _>
+      //                (  ` _/  N-ANDY   ,. '`
+      //               )    / |     _,. '`
+      //               (   /. /    |
+      //                ) ,  /`  ./
+      //               (  \_/   //_ _
+      //                ) /    //  (_)
+      //              _,~'#   (/.
+      // ~~~~~~~~~~~~~~~#~~#~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      //
     }
   }
 }

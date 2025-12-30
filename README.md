@@ -46,13 +46,14 @@ An ESP32-based device that displays real-time ADS-B flight data on dual 14-segme
 The project uses the following libraries (automatically installed via PlatformIO):
 - Adafruit GFX Library
 - Adafruit LED Backpack Library
+- ArduinoJson
 
 ## Usage
 
 ### Initial Setup
 
 1. With the mode switch in **SETUP** position (LOW), power on the device.
-2. The device creates a WiFi access point named "ADSB-ESP32-SETUP" (no password).
+2. The device creates a WiFi access point named "ADSB-ESP32" (no password).
 3. Connect your phone/computer to this network.
 4. Open a browser and go to `http://192.168.4.1` or whatever IP is shown.  HTTP only. No HTTPS.
 5. Enter your WiFi SSID and password, then save.
@@ -74,11 +75,10 @@ The project uses the following libraries (automatically installed via PlatformIO
 
 - **WiFi Credentials**: Stored in ESP32 flash memory. Reset by entering setup mode.
 - **API Endpoint**: Currently fetches closest flights to coordinates (40.6875, -73.9845). Modify in `main.cpp` for different locations.
-- **Display Messages**: Custom messages can be added in the `messages` array for fun scrolling text.
 
 ## Troubleshooting
 
-- **No Serial Output**: Ensure correct USB port (`/dev/ttyACM0`) and board selection (`esp32-s3-devkitc-1`). For ESP32-S3 Wroom 1, use the COM port, not USB.
+- **No Serial Output**: Ensure correct USB port (`/dev/ttyACM0`) and board selection (`esp32-s3-devkitc-1`). For ESP32-S3 Wroom 1, use the serial monitor for debugging output.
 - **WiFi Not Connecting**: Check credentials in setup mode.
 - **Displays Not Working**: Verify I2C connections and addresses.
 - **Board Not Detected**: Try a different USB port/cable or press the reset button.
