@@ -404,7 +404,7 @@ void setup() {
   // title screen
   displayText("andy@maxwell.nyc");
   displayText("=ADS-B=");
-  displayText(" V 1.0");
+  displayText(" V 1.1");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);

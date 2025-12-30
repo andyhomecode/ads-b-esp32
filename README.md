@@ -4,6 +4,10 @@ Shows info on airline flights on approach to La Guardia that fly over Williamsbu
 
 An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airports.
 
+## Version
+ - version 1.1
+ - Dec 29, 2025
+
 ## Features
 
 - **Flight Filtering**: Displays flights over Brooklyn at altitudes between 1000-5000 feet on approach to LGA.
