@@ -2,7 +2,7 @@
 
 Shows info on airline flights on approach to La Guardia that fly over Williamsburg, Brooklyn on approach to LGA that I can see out my window.  It's looking for commercial flights in a 3km circle around [Bond & Atlantic Ave](https://www.google.com/maps/place/40°41'15.0"N+73°59'04.2"W/@40.6868096,-73.9852837,18z).
 
-![LGA Approach](lga-approach.png)
+![LGA Approach](LGA-approach.png)
 
 
 An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airports.
