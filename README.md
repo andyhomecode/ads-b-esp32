@@ -1,11 +1,11 @@
 # ADS-B ESP32
 
-Shows info on airline flights on approach to La Guardia that fly over Williamsburg, Brooklyn on approach to LGA that I can see out my window.  It's looking for commercial flights in a 3km circle around [Bond & Atlantic Ave](https://www.google.com/maps/place/40°41'15.0"N+73°59'04.2"W/@40.6868096,-73.9852837,18z).
+I can look out my window and see ariplanes on approach to La Guardia (LGA).  This device shows info on commercial airline flights relatively low over Williamsburg, Brooklyn on approach.
 
 ![LGA Approach](LGA-approach.png)
 
 
-An ESP32-based device that displays real-time ADS-B flight data on dual 14-segment LED displays. It fetches aircraft data from the ADS-B API and shows information like closest flights, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airports.
+it's an ESP32-based device that shows real-time ADS-B flight data on dual 14-segment LED displays. It fetches data from an ADS-B API and shows like flight, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airport.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
@@ -22,14 +22,14 @@ An ESP32-based device that displays real-time ADS-B flight data on dual 14-segme
 - **Setup Mode**: Built-in access point for easy WiFi configuration via web interface selectable by switch.
 - **Run Mode**: does it's little thing. 
 
-## Hardware Requirements
+## Hardware
 
-- ESP32-S3 Wroom 1 Dev Board (or compatible board)
-- 2x Adafruit 14-Segment LED Backpacks (I2C addresses 0x70 and 0x71)
-- Physical switch connected to GPIO 13 (for mode selection)
-- USB cable for power and programming
+- [ESP32-S3 Wroom 1 Dev Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html) (or compatible board)
+- 2x [Adafruit 14-Segment LED Backpacks, Product ID: 2157](https://www.adafruit.com/product/2157) (I2C addresses 0x70 and 0x71)
+- Physical [switch](https://www.nintendo.com/us/gaming-systems/switch-2/) connected to GPIO 13 (for mode selection)
+- [USB cable](https://www.amazon.com/dp/B0DF1RRT3N) for power and programming
 
-### Pin Connections
+### Pins
 
 - **I2C SDA**: GPIO 9
 - **I2C SCL**: GPIO 18
@@ -43,6 +43,8 @@ An ESP32-based device that displays real-time ADS-B flight data on dual 14-segme
 - USB drivers for ESP32 (usually automatic on Linux)
 
 ### Installation
+
+If you're the type to do this, you probably don't need instructions, but...
 
 1. Clone or download this project.
 2. Open in PlatformIO (or VS Code with PlatformIO extension).
