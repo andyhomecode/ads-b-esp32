@@ -5,7 +5,7 @@ I can look out my window and see ariplanes on approach to La Guardia (LGA).  Thi
 ![LGA Approach](LGA-approach.png)
 
 
-it's an ESP32-based device that shows real-time ADS-B flight data on dual 14-segment LED displays. It fetches data from an ADS-B API and shows like flight, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airport.
+it's an ESP32-based device that shows real-time ADS-B flight data from the very cool [adsb.lol](https://adsb.lol/) on dual 14-segment LED displays. It fetches data from an ADS-B API and shows like flight, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airport.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
