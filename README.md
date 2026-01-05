@@ -10,8 +10,8 @@ it's an ESP32-based device that shows real-time ADS-B flight data from the very 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
 ## Version
- - version 1.1
- - Dec 29, 2025
+ - version 1.2
+ - Jan 5, 2025
 
 ## Features
 
@@ -28,6 +28,7 @@ it's an ESP32-based device that shows real-time ADS-B flight data from the very 
 - 2x [Adafruit 14-Segment LED Backpacks, Product ID: 2157](https://www.adafruit.com/product/2157) (I2C addresses 0x70 and 0x71)
 - Physical [switch](https://www.nintendo.com/us/gaming-systems/switch-2/) connected to GPIO 13 (for mode selection)
 - [USB cable](https://www.amazon.com/dp/B0DF1RRT3N) for power and programming
+- 3D printed a case using this cool [OpenSCAD](https://openscad.org/) Ultimate [Box Maker](https://www.thingiverse.com/thing:1264391) on a [Prusa Mini+](https://www.prusa3d.com/category/original-prusa-mini/)
 
 ### Pins
 
@@ -58,6 +59,14 @@ The project uses the following libraries (automatically installed via PlatformIO
 - Adafruit GFX Library
 - Adafruit LED Backpack Library
 - ArduinoJson
+
+### Case
+
+See links above for info, but you can just print the .STLs under case.  If you'd like to modify them, use OpenSCAD and there is a lovely configurator that the original author wrote!  
+
+I cut a piece of red plexiglass to the size/shape of the end cap to be able to see the LED display through. 
+
+More pictures coming
 
 ## Usage
 
@@ -100,6 +109,8 @@ The project uses the following libraries (automatically installed via PlatformIO
 - `platformio.ini`: PlatformIO configuration for ESP32-S3.
 - `include/`: Header files (if any).
 - `lib/`: Local libraries (if any).
+- `case/`: OpenSCAD file for printing the case.
+
 
 ## API Reference
 
