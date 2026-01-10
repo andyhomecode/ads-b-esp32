@@ -64,7 +64,21 @@ The project uses the following libraries (automatically installed via PlatformIO
 
 See links above for info, but you can just print the .STLs under case.  If you'd like to modify them, use OpenSCAD and there is a lovely configurator that the original author wrote!  
 
+
+- 130mm wide
+- 120mm deep
+- 45mm tall
+
+LED PCB hole is 12mm higher than the centerline of the LED display. Box is 45 high.  45/2= 22.5 - 12 = 10.5mm down from top
+
+Back of the LED PCB needs to be 25mm behind the back of the plexiglass to accommodate for pins, connectors, and depth of LEDs.
+
+screw holes on the 20mm x 80mm PCBs are 76mm apart
+
+Screw mounts placed in tinkercad rather than OpenSCAD because I like to fiddle.
+
 I cut a piece of red plexiglass to the size/shape of the end cap to be able to see the LED display through. 
+
 
 More pictures coming
 
