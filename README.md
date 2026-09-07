@@ -1,26 +1,43 @@
-# ADS-B ESP32
+# Uptown F @ East Broadway
 
-I can look out my window and see ariplanes on approach to La Guardia (LGA).  This device shows info on commercial airline flights relatively low over Williamsburg, Brooklyn on approach.
+I can't see the subway from my window, but I still want to know when to leave for
+it. This device shows a live countdown to the next **uptown (northbound) F
+trains** at the **East Broadway** station on the Lower East Side, on dual 14-segment
+LED displays.
 
-![LGA Approach](LGA-approach.png)
-
-
-it's an ESP32-based device that shows real-time ADS-B flight data from the very cool [adsb.lol](https://adsb.lol/) on dual 14-segment LED displays. It fetches data from an ADS-B API and shows like flight, altitudes, aircraft types (mapped from ICAO codes), airlines, and origin airport.
+> Previously this project was a plane spotter for LGA approaches (hence the repo
+> name and the old `LGA-approach.png`). Same hardware, new job. See the git
+> history if you want the ADS-B version.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
+It's an ESP32-based device that pulls real-time arrival data from the MTA's
+GTFS-realtime feed (via the [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/)
+JSON proxy, so no protobuf parsing on the microcontroller) and cycles through
+the minutes-to-arrival for the next few trains.
+
 ## Version
- - version 1.2
- - Jan 5, 2025
+ - version 2.3
+ - Sep 7, 2026
 
 ## Features
 
-- **Flight Filtering**: Displays flights over Brooklyn at altitudes between 1000-5000 feet on approach to LGA.
-- **Code -> English lookups**: converts ICAC and airline codes to english
-- **Dual 14-Segment LED Displays**: Shows scrolling text and data.
-- **WiFi Connectivity**: Connects to your WiFi network to fetch live ADS-B data.
-- **Setup Mode**: Built-in access point for easy WiFi configuration via web interface selectable by switch.
-- **Run Mode**: does it's little thing. 
+- **Next-train countdown**: cycles through a two-part header (`UPTOWN F`,
+  `E B'WAY`) then the next 3 northbound F trains as `1  3min`, `2  8min`,
+  `3 14min` (`n  NOW` when a train is arriving now, `NO F TRN` when the uptown
+  list is empty).
+- **Fade + scroll transitions**: each frame dims, scrolls the old data out to
+  the left while the new data scrolls in from the right, then fades back up to
+  full brightness.
+- **Decoupled fetch**: hits the server about every 30s and caches the arrival
+  times; the display keeps looping and counting down between fetches.
+- **NTP time sync**: turns the feed's absolute arrival timestamps into a live
+  countdown; falls back to the feed's own `updated` time if NTP doesn't sync.
+- **Dual 14-Segment LED Displays**: shows scrolling text and data.
+- **WiFi Connectivity**: connects to your WiFi network to fetch live arrival data.
+- **Setup Mode**: built-in access point for easy WiFi configuration via web
+  interface, selectable by switch.
+- **Run Mode**: does its little thing.
 
 ## Hardware
 
@@ -87,7 +104,7 @@ More pictures coming
 ### Initial Setup
 
 1. With the mode switch in **SETUP** position (LOW), power on the device.
-2. The device creates a WiFi access point named "ADSB-ESP32" (no password).
+2. The device creates a WiFi access point named "SUBWAY-ESP32" (no password).
 3. Connect your phone/computer to this network.
 4. Open a browser and go to `http://192.168.4.1` or whatever IP is shown.  HTTP only. No HTTPS.
 5. Enter your WiFi SSID and password, then save.
@@ -96,19 +113,29 @@ More pictures coming
 ### Normal Operation
 
 1. Set the mode switch to **RUN** position (HIGH).
-2. The device will connect to WiFi and start fetching ADS-B data.
-3. Flight information scrolls on the LED displays, showing flight number, altitude, aircraft type, airline, and origin airport.
+2. The device connects to WiFi, syncs the clock over NTP, and starts fetching arrival data.
+3. It cycles: `UPTOWN F` (~1s), `E B'WAY` (~1s), then each of the next few trains
+   (~2s each) as a minutes countdown. Every frame fades down, scrolls the old
+   data out while the new data scrolls in, then fades back up.
 4. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
 
-- Open the serial monitor in PlatformIO at 9600 baud to see debug output.
+- Open the serial monitor in PlatformIO at 9600 baud to see debug output (raw JSON, parsed epoch).
 - DOES NOT WORK ON LINUX FOR SOME REASON
 
 ## Configuration
 
 - **WiFi Credentials**: Stored in ESP32 flash memory. Reset by entering setup mode.
-- **API Endpoint**: Currently fetches closest flights to coordinates (40.6875, -73.9845). Modify in `main.cpp` for different locations.
+- **Station / direction**: `STOP_ID` in `main.cpp` is `F16` (East Broadway). The
+  code reads the `N` (northbound / uptown) array; change to `S` for Brooklyn-bound.
+  Other stop IDs: hit `https://api.wheresthefuckingtrain.com/by-id/<id>` or see
+  the MTA GTFS `stops.txt`.
+- **How many trains**: `NUM_TRAINS` in `main.cpp` (default 3).
+- **Refresh rate**: `REFETCH_MS` in `main.cpp` (default 30000) — how often it
+  re-hits the server; the display loops faster than this off the cache.
+- **Brightness / animation feel**: `BRIGHT_FULL` / `BRIGHT_DIM` (HT16K33 levels
+  0–15) and the `stepMs` / hold values in `showFrame()` / `showArrivals()`.
 
 ## Troubleshooting
 
@@ -116,6 +143,9 @@ More pictures coming
 - **WiFi Not Connecting**: Check credentials in setup mode.
 - **Displays Not Working**: Verify I2C connections and addresses.
 - **Board Not Detected**: Try a different USB port/cable or press the reset button.
+- **All trains show "DUE" or wrong minutes**: NTP didn't sync. Check internet
+  access; the code falls back to the feed's `updated` timestamp, which can be a
+  little stale.
 
 ## Code Structure
 
@@ -128,10 +158,13 @@ More pictures coming
 
 ## API Reference
 
-- **ADS-B Data Source**: 
-  - [api.adsb.lol/v2/point/](https://api.adsb.lol/v2/point/) - Fetches closest aircraft data.
-  - [api.adsb.lol/api/0/routeset](https://api.adsb.lol/api/0/routeset) - Retrieves flight route information.
-  - [api.adsb.lol](https://api.adsb.lol/) Open ADS-B data API docs. 
+- **Arrival data**: [`api.wheresthefuckingtrain.com/by-id/F16`](https://api.wheresthefuckingtrain.com/by-id/F16)
+  — a free JSON proxy of the MTA's GTFS-realtime BDFM feed. Returns the station
+  name plus `N` (northbound) and `S` (southbound) arrays of `{route, time}`.
+- **Upstream**: [MTA GTFS-realtime feeds](https://www.mta.info/developers) — the
+  BDFM feed at `https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm`
+  is protobuf-encoded and no longer needs an API key, if you'd rather decode it
+  on-device.
 
 ## License
 
@@ -143,6 +176,6 @@ Feel free to submit issues or pull requests for improvements!
 
 ## Credits
 
-- test harness in python to develop API calls: https://github.com/andyhomecode/adsb-lga
-- ESP32 code reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
+- Arrival data via [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/) proxying the MTA GTFS-realtime feed.
+- ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.
