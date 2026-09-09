@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.0
+ - version 4.1
  - Sep 9, 2026
 
 ## Features
@@ -39,10 +39,11 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   (`FROM MIA MIAMI`). Northern-most plane wins — it's the closest to LGA. No
   plane in the area → just the trains, same as before.
 - **M14A bus**: upcoming M14A-SBS buses at Grand St / Clinton St headed west
-  toward Abingdon Sq (`M14A BUS` header, then `1  4min`, `2 12min`, ...). MTA
-  BusTime SIRI; the stop also carries the L92 subway shuttle, which is filtered
-  out. Needs an API key (see [Secrets](#secrets)); no key → the block is just
-  skipped, and nothing shows overnight when no bus is being tracked.
+  toward Abingdon Sq (`M14A BUS` header, then `1B  4min`, `2B 12min`, ... — the
+  `B` matches the trains' `U`/`D`). MTA BusTime SIRI; the stop also carries the
+  L92 subway shuttle, which is filtered out by route. Needs an API key (see
+  [Secrets](#secrets)); no key → the block is skipped, and nothing shows
+  overnight when no bus is being tracked.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
   point, a `* WX *` frame then the event name (`Winter Weather Advisory`) — the
   event only, no headline or instructions. Refreshed every 5 min; nothing shown
@@ -240,10 +241,10 @@ More pictures coming
   on-device.
 - **Bus arrivals**: [`bustime.mta.info/api/siri/stop-monitoring-v2.json?key=…&MonitoringRef=<stop>`](https://bustime.mta.info/wiki/Developers/SIRIStopMonitoring)
   — MTA BusTime SIRI. `MonitoredStopVisit[].MonitoredVehicleJourney`:
-  `PublishedLineName` (an array — `["M14A-SBS"]`), `MonitoredCall.ExpectedArrivalTime`,
-  `MonitoredCall.NumberOfStopsAway`. Needs a free key
-  (<https://register.developer.obanyc.com/>); parsed through an ArduinoJson
-  filter. Empty overnight when nothing's tracked.
+  `PublishedLineName` (an array — `["M14A-SBS"]`) and `MonitoredCall.ExpectedArrivalTime`
+  (with fractional seconds — `isoToEpoch()` handles that). Needs a free key
+  (<https://register.developer.obanyc.com/>). One stop's response is a few KB,
+  parsed whole (no filter). Empty overnight when nothing's tracked.
 - **Plane positions**: [`api.adsb.lol/v2/point/{lat}/{lon}/{radius_nm}`](https://api.adsb.lol/docs)
   — free, no key, but **requires a non-generic `User-Agent` with contact info**
   (else `403`). Returns an `ac[]` array; we filter to `category == "A3"` in the
