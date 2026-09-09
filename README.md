@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.6
+ - version 4.7
  - Sep 9, 2026
 
 ## Features
