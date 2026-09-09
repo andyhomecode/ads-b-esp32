@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.4 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.5 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
 // LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
@@ -979,7 +979,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.4");
+  displayText(" V 4.5");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
