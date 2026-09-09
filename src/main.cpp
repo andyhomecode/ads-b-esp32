@@ -9,7 +9,7 @@
 // 2025 12 25, repurposed 2026 09 07, recombined 2026 09 09
 //
 // Two feeds on one pair of displays:
-//   1. Countdown to the next uptown (northbound) F trains at East Broadway.
+//   1. Countdown to the next uptown (northbound) F trains at East Broadway, M14A and M9 busses, and weather alerts.
 //   2. If an airliner is low over Brooklyn on final into LGA, the northern-most
 //      one in the bounding area -- flight, airline, origin, aircraft type --
 //      shown between subway passes.
@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.3 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.4 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
 // LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
@@ -390,6 +390,40 @@ void blink(bool blinkOn) {
 }
 
 
+//  progress bar ----------------------------------------------------------
+//  Fetches block loop(), so while a fetch cycle runs the display becomes a
+//  dim left-to-right bar: one column per HTTP call. '-' the moment a call
+//  starts, then when it returns: '*' got data, '0' call ok but nothing,
+//  'X' error. progReset() at the top of the fetch section each pass;
+//  progBegin()/progEnd() wrap each call.
+#define BRIGHT_MIN 0            // HT16K33 dimmest still-lit level
+
+static char g_prog[9] = "        ";
+static int  g_progN   = 0;      // next column
+
+void progReset() {
+  memset(g_prog, ' ', 8);
+  g_prog[8] = '\0';
+  g_progN = 0;
+}
+
+void progBegin() {
+  if (g_progN >= 8) return;
+  g_prog[g_progN] = '-';
+  setBrightnessBoth(BRIGHT_MIN);
+  displayStringAcrossTwoDisplays(g_prog);
+}
+
+void progEnd(char result) {          // '*' data | '0' none | 'X' error
+  if (g_progN >= 8) return;
+  g_prog[g_progN] = result;
+  displayStringAcrossTwoDisplays(g_prog);
+  g_progN++;
+}
+
+bool progRan() { return g_progN > 0; }  // did this pass hit the network?
+
+
 //  _   _
 // | |_(_)_ __ ___   ___
 // | __| | '_ ` _ \ / _ \
@@ -500,6 +534,8 @@ Plane g_plane;
 // false (and shows nothing) on any HTTP or JSON trouble: a missing plane must
 // never take the subway clock down with it.
 bool fetchNorthernmostPlane(Plane &out) {
+  progBegin();
+
   HTTPClient http;
   http.setUserAgent(USER_AGENT);            // adsb.lol 403s a generic UA
   http.setConnectTimeout(4000);
@@ -509,6 +545,7 @@ bool fetchNorthernmostPlane(Plane &out) {
   if (code != HTTP_CODE_OK) {
     Serial.printf("ADS-B HTTP %d\n", code);
     http.end();
+    progEnd('X');
     return false;
   }
   String payload = http.getString();
@@ -517,11 +554,12 @@ bool fetchNorthernmostPlane(Plane &out) {
   JsonDocument doc;
   if (deserializeJson(doc, payload)) {
     Serial.println("ADS-B JSON parse error");
+    progEnd('X');
     return false;
   }
 
   JsonArray ac = doc["ac"];
-  if (ac.isNull()) return false;
+  if (ac.isNull()) { progEnd('0'); return false; }
 
   float bestLat = -1000;
   JsonObject best;
@@ -539,12 +577,12 @@ bool fetchNorthernmostPlane(Plane &out) {
       best = a;
     }
   }
-  if (best.isNull()) return false;
+  if (best.isNull()) { progEnd('0'); return false; }
 
   String cs = String(best["flight"] | "");
   cs.trim();
   if (cs.startsWith(".")) cs = cs.substring(1);  // ".N199UW" -> "N199UW"
-  if (cs.isEmpty()) return false;
+  if (cs.isEmpty()) { progEnd('0'); return false; }
 
   long alt = best["alt_baro"] | 0L;
   if (alt <= 0) alt = best["alt_geom"] | 0L;
@@ -553,6 +591,7 @@ bool fetchNorthernmostPlane(Plane &out) {
   out.callsign = cs;
   out.typeCode = String(best["t"] | "");
   out.altFt    = alt;
+  progEnd('*');
   return true;
 }
 
@@ -566,17 +605,22 @@ void lookupRoute(Plane &p) {
     if (airlineLookup.count(icao3)) p.airline = airlineLookup[icao3];
   }
 
+  progBegin();
+
   HTTPClient http;
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
   http.setTimeout(4000);
   http.begin(String(ROUTE_URL_BASE) + p.callsign);
   int code = http.GET();
+  char pc;
   if (code == HTTP_CODE_OK) {
+    pc = '0';
     JsonDocument doc;
     if (!deserializeJson(doc, http.getString())) {
       JsonObject fr = doc["response"]["flightroute"];
       if (!fr.isNull()) {
+        pc = '*';
         if (p.airline.isEmpty())
           p.airline = String(fr["airline"]["name"] | "");
 
@@ -590,8 +634,10 @@ void lookupRoute(Plane &p) {
     }
   } else {
     Serial.printf("route HTTP %d\n", code);   // 404 == unknown callsign, fine
+    pc = (code == HTTP_CODE_NOT_FOUND) ? '0' : 'X';
   }
   http.end();
+  progEnd(pc);
 
   if (p.airline.isEmpty()) p.airline = "Unknown";
 }
@@ -641,6 +687,8 @@ void showPlane(const Plane &p) {
 String g_wxEvent;  // e.g. "Winter Weather Advisory"; "" when clear
 
 void fetchWeatherAlert() {
+  progBegin();
+
   HTTPClient http;
   http.setUserAgent(USER_AGENT);              // NWS asks for an identifying UA
   http.setConnectTimeout(4000);
@@ -650,6 +698,7 @@ void fetchWeatherAlert() {
   if (code != HTTP_CODE_OK) {
     Serial.printf("WX HTTP %d\n", code);
     http.end();
+    progEnd('X');
     return;  // keep the last known alert; don't drop a real one on a blip
   }
   String payload = http.getString();
@@ -661,6 +710,7 @@ void fetchWeatherAlert() {
   JsonDocument doc;
   if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
     Serial.println("WX JSON parse error");
+    progEnd('X');
     return;
   }
 
@@ -669,6 +719,7 @@ void fetchWeatherAlert() {
                 ? String(feats[0]["properties"]["event"] | "")
                 : "";
   Serial.printf("WX: %s\n", g_wxEvent.length() ? g_wxEvent.c_str() : "(clear)");
+  progEnd(g_wxEvent.length() ? '*' : '0');    // '0' == no active alert
 }
 
 
@@ -695,6 +746,8 @@ int    g_busCount[NUM_BUS_FEEDS] = {0};
 void fetchOneBusFeed(int fi) {
   const BusFeed &feed = BUS_FEEDS[fi];
 
+  progBegin();
+
   HTTPClient http;
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
@@ -705,6 +758,7 @@ void fetchOneBusFeed(int fi) {
   if (code != HTTP_CODE_OK) {
     Serial.printf("BUS %s HTTP %d\n", feed.linePrefix, code);
     http.end();
+    progEnd('X');
     return;
   }
   String payload = http.getString();
@@ -718,6 +772,7 @@ void fetchOneBusFeed(int fi) {
       deserializeJson(doc, payload, DeserializationOption::NestingLimit(20));
   if (err) {
     Serial.printf("BUS %s parse error: %s\n", feed.linePrefix, err.c_str());
+    progEnd('X');
     return;
   }
 
@@ -745,6 +800,7 @@ void fetchOneBusFeed(int fi) {
   }
   g_busCount[fi] = n;
   Serial.printf("BUS %s: %d\n", feed.linePrefix, n);
+  progEnd(n > 0 ? '*' : '0');
 }
 
 void fetchBuses() {
@@ -917,7 +973,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.3");
+  displayText(" V 4.4");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -967,7 +1023,7 @@ void loop() {
       //   _____|_[]_[]_[]_[]__|__
       //  |_ East Broadway  <-> F  |
       //  |_o_______________o______|
-      //     O-O         O-O
+      //     O-O               O-O
 
       // The plan:
       // - every REFETCH_MS, hit the JSON proxy and cache the next few arrival
@@ -982,7 +1038,10 @@ void loop() {
       static unsigned long lastFetchMs = 0;
       static bool haveData = false;
 
+      progReset();  // start a fresh progress bar for whatever fetches fire below
+
       if (!haveData || millis() - lastFetchMs >= REFETCH_MS) {
+        progBegin();
         // Make HTTP GET to the MTA JSON proxy
         HTTPClient http;
         http.begin(String(API_URL_BASE) + STOP_ID);
@@ -997,7 +1056,7 @@ void loop() {
           if (error) {
             Serial.print("JSON parse error: ");
             Serial.println(error.c_str());
-            displayText("JSONErr");
+            progEnd('X');
             blink(true);
           } else {
             blink(false);
@@ -1042,9 +1101,11 @@ void loop() {
             fetchEpoch = nowEpoch;
             lastFetchMs = millis();
             haveData = true;
+            progEnd(trainCount > 0 ? '*' : '0');
           }
         } else {
           Serial.printf("HTTP error: %d\n", httpCode);
+          progEnd('X');
           displayText("HTTP " + String(httpCode));
           blink(true);
           ESP.restart();  // oh well
@@ -1092,6 +1153,13 @@ void loop() {
         wxFirst = false;
         lastWxMs = millis();
         fetchWeatherAlert();
+      }
+
+      // If we hit the network this pass, hold the finished bar a beat, then let
+      // the first real frame scroll it away.
+      if (progRan()) {
+        delay(350);
+        g_frame = String(g_prog);
       }
 
       // current time: NTP if we have it, else the fetch clock plus elapsed

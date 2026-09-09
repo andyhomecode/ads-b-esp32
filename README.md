@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.3
+ - version 4.4
  - Sep 9, 2026
 
 ## Features
@@ -55,9 +55,14 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
   8 columns).
-- **Decoupled fetch**: hits the train server about every 30s and adsb.lol about
-  every 20s, caches both; the display keeps looping between fetches. A failed or
-  empty plane fetch just drops the plane block — the countdown is never affected.
+- **Decoupled fetch**: each source (trains ~30s, adsb.lol ~20s, buses ~30s,
+  weather ~5min) polls on its own clock and the display loops off the caches
+  between fetches. A failed or empty fetch just leaves that block's last data (or
+  nothing) — the other blocks are unaffected.
+- **Fetch progress bar**: the HTTP calls block the loop, so while a fetch cycle
+  runs the display becomes a dim left-to-right bar — one column per call: `-`
+  when it starts, then `*` (got data) / `0` (call OK, nothing there) / `X`
+  (error). It scrolls away as the real frames come back.
 - **NTP time sync**: turns the feed's absolute arrival timestamps into a live
   countdown; falls back to the feed's own `updated` time if NTP doesn't sync.
 - **Dual 14-Segment LED Displays**: shows scrolling text and data.
