@@ -4,14 +4,18 @@
 // | |_| |  __/ | |   | | (_) V / | |\  | |_|
 //  \___/|_|    |_|   |_|\___/_/  |_| \_| (_)
 //
-// uptown-f-esp32
-// Andy Maxwell | andy@maxwell.nyc
-// 2025 12 25, repurposed 2026 09 07
-// Show the countdown to the next uptown (northbound) F trains
-// at the East Broadway station on the Lower East Side.
+// uptown-f-esp32  (+ plane spotter, reunited)
+// Andy Maxwell | github.com/andyhomecode/ads-b-esp32
+// 2025 12 25, repurposed 2026 09 07, recombined 2026 09 09
 //
-// Same hardware as the old plane-spotter: ESP32-S3 Wroom 1 Dev Board,
-// two Adafruit 14-segment LED backpacks (0x70 / 0x71), mode switch on GPIO 13.
+// Two feeds on one pair of displays:
+//   1. Countdown to the next uptown (northbound) F trains at East Broadway.
+//   2. If an airliner is low over Brooklyn on final into LGA, the northern-most
+//      one in the bounding area -- flight, airline, origin, aircraft type --
+//      shown between subway passes.
+//
+// Same hardware throughout: ESP32-S3 Wroom 1 Dev Board, two Adafruit 14-segment
+// LED backpacks (0x70 / 0x71), mode switch on GPIO 13.
 //
 // for the ESP32-S3 Wroom 1 Dev Board,
 // use the COM port, not USB
@@ -31,6 +35,7 @@
 #include "Adafruit_LEDBackpack.h"
 
 #include <ArduinoJson.h>
+#include <map>
 
 #define SWITCH_PIN 13  // GPIO pin for mode switch
 
@@ -39,14 +44,37 @@
 
 // What we're watching.
 // Stop IDs come from the MTA GTFS feed; East Broadway on the F is "F16".
-// The "N" array in the response is northbound (uptown / Manhattan- & Queens-bound).
+// In the response, "N" is northbound (uptown / Manhattan- & Queens-bound) and
+// "S" is southbound (downtown / Brooklyn-bound). We show both.
 #define API_URL_BASE   "https://api.wheresthefuckingtrain.com/by-id/"
 #define STOP_ID        "F16"
-#define NUM_TRAINS     3      // how many upcoming trains to show
+#define NUM_TRAINS     3      // how many upcoming trains to show, per direction
 #define REFETCH_MS     30000  // re-hit the server about this often; the display loops faster
 
 #define BRIGHT_FULL    15     // HT16K33 brightness, parked frame
 #define BRIGHT_DIM     1      // HT16K33 brightness while a frame scrolls in
+
+// --- ADS-B: airliners on final into LGA, low over Brooklyn -------------------
+// adsb.lol's free API. It now 403s any request with a blank or generic
+// User-Agent ("User-Agent too generic; include valid contact info.") -- that is
+// exactly what killed the original plane-spotter build on the device -- so every
+// request below sends a real UA with contact info.
+#define USER_AGENT      "ads-b-esp32/3.0 (+https://github.com/andyhomecode/ads-b-esp32)"
+
+// Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
+// LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
+#define ADSB_URL_BASE   "https://api.adsb.lol/v2/point/"
+#define ADSB_LAT        "40.6875"
+#define ADSB_LON        "-73.9845"
+#define ADSB_RADIUS_NM  "6"
+#define ADSB_CATEGORY   "A3"          // A3 == large aircraft (75k-300k lb): airliners
+#define ADSB_ALT_MIN    800           // ft -- on final, low over Brooklyn
+#define ADSB_ALT_MAX    5000          // ft
+#define ADSB_REFETCH_MS 20000         // planes move fast; poll sooner than the trains
+
+// adsbdb.com: free callsign -> airline + route lookup. Replaces adsb.lol's old
+// /api/0/routeset endpoint, which now returns an empty 201 for everything.
+#define ROUTE_URL_BASE  "https://api.adsbdb.com/v0/callsign/"
 
 // instantiate the two i2c LED controllers
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
@@ -72,6 +100,118 @@ Preferences preferences;
 
 
 bool isConnected = false;  // global variable to show WiFi state
+
+
+// ICAO airline + aircraft-type codes -> friendly names. Offline and punchy;
+// covers what actually flies the LGA approach. adsbdb fills in anything missing.
+std::map<String, String> airlineLookup;
+std::map<String, String> icacoLookup;
+
+void initLookups() {
+  // Populate airline lookup
+  airlineLookup["AAL"] = "American";
+  airlineLookup["DAL"] = "Delta";
+  airlineLookup["UAL"] = "United";
+  airlineLookup["JBU"] = "JetBlue";
+  airlineLookup["SWA"] = "South West";
+  airlineLookup["ACA"] = "Air Canada";
+  airlineLookup["NKS"] = "Spirit";
+  airlineLookup["FFT"] = "Frontier";
+  airlineLookup["WJA"] = "WestJet";
+  airlineLookup["POE"] = "Porter";
+  airlineLookup["BMA"] = "Bermuda Air";
+  airlineLookup["RPA"] = "Republic";
+  airlineLookup["EDV"] = "Delta";
+  airlineLookup["ENY"] = "American";
+  airlineLookup["PDT"] = "American";
+  airlineLookup["JIA"] = "American";
+  airlineLookup["SKW"] = "Delta";
+  airlineLookup["GJS"] = "United / Delta";
+  airlineLookup["ASH"] = "United";
+  airlineLookup["UCA"] = "United";
+  airlineLookup["JZA"] = "Air Canada";
+  airlineLookup["AWI"] = "United";
+
+  // what kind of birds are indigenous to Queens?
+  icacoLookup["A19N"] = "Airbus A319neo";
+  icacoLookup["A20N"] = "Airbus A320neo";
+  icacoLookup["A21N"] = "Airbus A321neo";
+  icacoLookup["A221"] = "Airbus A220-100";
+  icacoLookup["A223"] = "Airbus A220-300";
+  icacoLookup["A306"] = "Airbus A300-600";
+  icacoLookup["A310"] = "Airbus A310";
+  icacoLookup["A318"] = "Airbus A318";
+  icacoLookup["A319"] = "Airbus A319";
+  icacoLookup["A320"] = "Airbus A320";
+  icacoLookup["A321"] = "Airbus A321";
+  icacoLookup["A332"] = "Airbus A330-200";
+  icacoLookup["A333"] = "Airbus A330-300";
+  icacoLookup["A338"] = "Airbus A330-800";
+  icacoLookup["A339"] = "Airbus A330-900";
+  icacoLookup["A343"] = "Airbus A340-300";
+  icacoLookup["A346"] = "Airbus A340-600";
+  icacoLookup["A359"] = "Airbus A350-900";
+  icacoLookup["A35K"] = "Airbus A350-1000";
+  icacoLookup["A388"] = "Airbus A380-800";
+  icacoLookup["AT43"] = "ATR 42-300";
+  icacoLookup["AT45"] = "ATR 42-500";
+  icacoLookup["AT46"] = "ATR 42-600";
+  icacoLookup["AT72"] = "ATR 72-200";
+  icacoLookup["AT75"] = "ATR 72-500";
+  icacoLookup["AT76"] = "ATR 72-600";
+  icacoLookup["B37M"] = "Boeing 737 MAX 7";
+  icacoLookup["B38M"] = "Boeing 737 MAX 8";
+  icacoLookup["B39M"] = "Boeing 737 MAX 9";
+  icacoLookup["B3XM"] = "Boeing 737 MAX 10";
+  icacoLookup["B712"] = "Boeing 717-200";
+  icacoLookup["B737"] = "Boeing 737-700";
+  icacoLookup["B738"] = "Boeing 737-800";
+  icacoLookup["B739"] = "Boeing 737-900";
+  icacoLookup["B744"] = "Boeing 747-400";
+  icacoLookup["B748"] = "Boeing 747-8";
+  icacoLookup["B752"] = "Boeing 757-200";
+  icacoLookup["B753"] = "Boeing 757-300";
+  icacoLookup["B762"] = "Boeing 767-200";
+  icacoLookup["B763"] = "Boeing 767-300";
+  icacoLookup["B764"] = "Boeing 767-400";
+  icacoLookup["B772"] = "Boeing 777-200";
+  icacoLookup["B77L"] = "Boeing 777-200LR";
+  icacoLookup["B77W"] = "Boeing 777-300ER";
+  icacoLookup["B779"] = "Boeing 777-9";
+  icacoLookup["B788"] = "Boeing 787-8";
+  icacoLookup["B789"] = "Boeing 787-9";
+  icacoLookup["B78X"] = "Boeing 787-10";
+  icacoLookup["BCS1"] = "Bombardier CS100 (A221)";
+  icacoLookup["BCS3"] = "Bombardier CS300 (A223)";
+  icacoLookup["BE20"] = "Beechcraft Super King Air 200";
+  icacoLookup["B350"] = "Beechcraft King Air 350";
+  icacoLookup["C172"] = "Cessna 172 Skyhawk";
+  icacoLookup["C182"] = "Cessna 182 Skylane";
+  icacoLookup["C208"] = "Cessna 208 Caravan";
+  icacoLookup["C525"] = "Cessna CitationJet";
+  icacoLookup["C56X"] = "Cessna Citation Excel";
+  icacoLookup["CRJ1"] = "Bombardier CRJ-100";
+  icacoLookup["CRJ2"] = "Bombardier CRJ-200";
+  icacoLookup["CRJ7"] = "Bombardier CRJ-700";
+  icacoLookup["CRJ9"] = "Bombardier CRJ-900";
+  icacoLookup["CRJX"] = "Bombardier CRJ-1000";
+  icacoLookup["DH8C"] = "De Havilland Dash 8 Q300";
+  icacoLookup["DH8D"] = "De Havilland Dash 8 Q400";
+  icacoLookup["DHC6"] = "De Havilland Twin Otter";
+  icacoLookup["E135"] = "Embraer ERJ-135";
+  icacoLookup["E145"] = "Embraer ERJ-145";
+  icacoLookup["E170"] = "Embraer E170";
+  icacoLookup["E175"] = "Embraer E175";
+  icacoLookup["E75L"] = "Embraer E175 Long Wing";
+  icacoLookup["E190"] = "Embraer E190";
+  icacoLookup["E195"] = "Embraer E195";
+  icacoLookup["E290"] = "Embraer E190-E2";
+  icacoLookup["E295"] = "Embraer E195-E2";
+  icacoLookup["GLF5"] = "Gulfstream V";
+  icacoLookup["GLF6"] = "Gulfstream G650";
+  icacoLookup["MD88"] = "Mad Dog MD-88";
+  icacoLookup["PC12"] = "Pilatus PC-12";
+}
 
 
 // HTML template for the configuration page
@@ -253,11 +393,18 @@ long isoToEpoch(const char *iso) {
 }
 
 
-// One display pass: each frame fades down, scrolls the old data out / new data
-// in, then fades back up and holds -- "UPTOWN F" (~1s), "E B'WAY" (~1s), then
-// each cached arrival as "n XXmin" (~2s), or "n  NOW" when it's basically here.
-void showArrivals(const long *arrivals, int count, long nowEpoch) {
-  showFrame("UPTOWN F", 500);
+// One cached F arrival: absolute epoch + which way it's headed ('U' uptown /
+// 'D' downtown). Both directions get merged into one soonest-first list.
+struct Arrival {
+  long epoch;
+  char dir;
+};
+
+// The whole train display pass: one "E B'WAY" station frame, then every cached
+// arrival (both directions, already sorted soonest-first) as "nX YYmin" (~2s) /
+// "nX  NOW" when it's basically here -- n is the place in line, X is the
+// direction. A single "NO F TRN" if nothing's running.
+void showArrivals(const Arrival *trains, int count, long nowEpoch) {
   showFrame("E B'WAY", 500);
 
   if (count == 0) {
@@ -266,17 +413,172 @@ void showArrivals(const long *arrivals, int count, long nowEpoch) {
   }
 
   for (int i = 0; i < count; i++) {
-    long mins = (arrivals[i] - nowEpoch + 30) / 60;
+    long mins = (trains[i].epoch - nowEpoch + 30) / 60;
 
     char frame[12];
     if (mins <= 0) {
-      snprintf(frame, sizeof(frame), "%d  NOW", i + 1);
+      snprintf(frame, sizeof(frame), "%d%c  NOW", i + 1, trains[i].dir);
     } else {
       if (mins > 99) mins = 99;
-      snprintf(frame, sizeof(frame), "%d %2ldmin", i + 1, mins);
+      snprintf(frame, sizeof(frame), "%d%c %2ldmin", i + 1, trains[i].dir, mins);
     }
     showFrame(frame, 1300);
   }
+}
+
+
+//   __ _  __| |___    | |__
+//  / _` |/ _` / __|___| '_ \
+// | (_| | (_| \__ \___| |_) |
+//  \__,_|\__,_|___/   |_.__/
+//
+// The other half of the display. Between subway passes, if there's an airliner
+// low over Brooklyn on final into LGA, show the northern-most one (the one
+// closest to touchdown): flight, airline, origin, aircraft type.
+
+struct Plane {
+  bool   valid = false;
+  String callsign;              // trimmed, dot stripped: "AAL1389"
+  String typeCode;              // ICAO type code: "A321"
+  long   altFt = 0;
+  String airline;               // resolved friendly name, or "" until looked up
+  String origin;                // "MIA MIAMI", or "" if unknown / already at LGA
+  bool   routeChecked = false;  // already hit adsbdb for this callsign?
+};
+
+Plane g_plane;
+
+// GET adsb.lol and keep the northern-most A3 in the altitude band. Fills
+// callsign / typeCode / altFt only -- the route lookup is separate. Returns
+// false (and shows nothing) on any HTTP or JSON trouble: a missing plane must
+// never take the subway clock down with it.
+bool fetchNorthernmostPlane(Plane &out) {
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);            // adsb.lol 403s a generic UA
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(String(ADSB_URL_BASE) + ADSB_LAT + "/" + ADSB_LON + "/" + ADSB_RADIUS_NM);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("ADS-B HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("ADS-B JSON parse error");
+    return false;
+  }
+
+  JsonArray ac = doc["ac"];
+  if (ac.isNull()) return false;
+
+  float bestLat = -1000;
+  JsonObject best;
+  for (JsonObject a : ac) {
+    if (String(a["category"] | "") != ADSB_CATEGORY) continue;
+
+    // alt_baro is the string "ground" when parked -> coerces to 0, filtered out.
+    long alt = a["alt_baro"] | 0L;
+    if (alt <= 0) alt = a["alt_geom"] | 0L;
+    if (alt < ADSB_ALT_MIN || alt > ADSB_ALT_MAX) continue;
+
+    float lat = a["lat"] | -1000.0f;
+    if (lat > bestLat) {
+      bestLat = lat;
+      best = a;
+    }
+  }
+  if (best.isNull()) return false;
+
+  String cs = String(best["flight"] | "");
+  cs.trim();
+  if (cs.startsWith(".")) cs = cs.substring(1);  // ".N199UW" -> "N199UW"
+  if (cs.isEmpty()) return false;
+
+  long alt = best["alt_baro"] | 0L;
+  if (alt <= 0) alt = best["alt_geom"] | 0L;
+
+  out.valid    = true;
+  out.callsign = cs;
+  out.typeCode = String(best["t"] | "");
+  out.altFt    = alt;
+  return true;
+}
+
+// Resolve airline + origin for p.callsign. Local table first (short names), then
+// adsbdb for anything not in it and for the origin airport.
+void lookupRoute(Plane &p) {
+  p.routeChecked = true;
+
+  if (p.callsign.length() >= 3) {
+    String icao3 = p.callsign.substring(0, 3);
+    if (airlineLookup.count(icao3)) p.airline = airlineLookup[icao3];
+  }
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(String(ROUTE_URL_BASE) + p.callsign);
+  int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, http.getString())) {
+      JsonObject fr = doc["response"]["flightroute"];
+      if (!fr.isNull()) {
+        if (p.airline.isEmpty())
+          p.airline = String(fr["airline"]["name"] | "");
+
+        String oiata = String(fr["origin"]["iata_code"] | "");
+        String ocity = String(fr["origin"]["municipality"] | "");
+        if (!oiata.isEmpty() && oiata != "LGA") {
+          p.origin = ocity.isEmpty() ? oiata : (oiata + " " + ocity);
+          p.origin.toUpperCase();
+        }
+      }
+    }
+  } else {
+    Serial.printf("route HTTP %d\n", code);   // 404 == unknown callsign, fine
+  }
+  http.end();
+
+  if (p.airline.isEmpty()) p.airline = "Unknown";
+}
+
+// One plane pass. showFrame fades us in from the countdown; the details scroll
+// via displayText (it handles strings longer than the 8 columns).
+void showPlane(const Plane &p) {
+  showFrame("*PLANE*", 400);
+
+  // "AAL1389" -> "AAL 1389"; leave registrations / odd callsigns alone
+  String flight = p.callsign;
+  if (flight.length() > 3 &&
+      isAlpha(flight[0]) && isAlpha(flight[1]) && isAlpha(flight[2])) {
+    flight = flight.substring(0, 3) + " " + flight.substring(3);
+  }
+  displayText(flight);
+
+  displayText(p.airline.length() ? p.airline : "Unknown");
+
+  if (icacoLookup.count(p.typeCode))
+    displayText(icacoLookup[p.typeCode]);
+  else if (p.typeCode.length())
+    displayText(p.typeCode);
+
+  if (p.altFt > 0) {
+    char alt[16];
+    snprintf(alt, sizeof(alt), "%ld FT", p.altFt);
+    displayText(alt);
+  }
+
+  if (p.origin.length())
+    displayText("FROM " + p.origin);
+
+  g_frame = "        ";  // displayText() bypasses the scroll state showFrame tracks
 }
 
 
@@ -399,6 +701,8 @@ void setup() {
   Serial.println("Board started");
   preferences.begin("wifi-creds", false);
 
+  initLookups();  // airline + aircraft-type code tables for the ADS-B block
+
   pinMode(SWITCH_PIN, INPUT_PULLUP);  // enable the setup vs run switch
 
   Serial.print("in Setup\n");
@@ -416,9 +720,10 @@ void setup() {
   setBrightnessBoth(BRIGHT_FULL);
 
   // title screen
-  displayText("andy@maxwell.nyc");
-  displayText("=FTRAIN=");
-  displayText(" V 2.3");
+  displayText("github.com/andyhomecode/ads-b-esp32");
+  displayText("FTRAIN +");
+  displayText("PLANES");
+  displayText(" V 3.0");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -466,7 +771,7 @@ void loop() {
 
       //        _______________
       //   _____|_[]_[]_[]_[]__|__
-      //  |_ East Broadway  uptown |
+      //  |_ East Broadway  <-> F  |
       //  |_o_______________o______|
       //     O-O         O-O
 
@@ -476,8 +781,9 @@ void loop() {
       // - every pass through loop(), redraw the countdown from that cache so the
       //   minutes tick down without hammering the server
 
-      static long arrivals[NUM_TRAINS];
-      static int  arrivalCount = 0;
+      // Up to NUM_TRAINS each way, merged and sorted soonest-first for display.
+      static Arrival trains[2 * NUM_TRAINS];
+      static int     trainCount = 0;
       static long fetchEpoch = 0;            // our clock at the moment of the last fetch
       static unsigned long lastFetchMs = 0;
       static bool haveData = false;
@@ -502,21 +808,41 @@ void loop() {
           } else {
             blink(false);
 
-            JsonArray north = doc["data"][0]["N"];  // northbound == uptown
-
             // "now" from NTP, or fall back to the feed's own update time
             long nowEpoch = (long)time(nullptr);
             if (nowEpoch < 1700000000L) {
               nowEpoch = isoToEpoch(doc["updated"] | "");
             }
 
-            arrivalCount = 0;
-            if (!north.isNull()) {
-              for (JsonObject t : north) {
-                if (arrivalCount >= NUM_TRAINS) break;
+            // N == northbound (uptown), S == southbound (downtown / Brooklyn).
+            // Take up to NUM_TRAINS from each, tagged with direction; the feed
+            // occasionally lists a stray non-F route here, so keep F only.
+            trainCount = 0;
+            struct { const char *key; char dir; } dirs[] = {{"N", 'U'}, {"S", 'D'}};
+            for (auto &d : dirs) {
+              int added = 0;
+              for (JsonObject t : doc["data"][0][d.key].as<JsonArray>()) {
+                if (added >= NUM_TRAINS) break;
+                if (String(t["route"] | "") != "F") continue;
                 long e = isoToEpoch(t["time"] | "");
-                if (e > 0) arrivals[arrivalCount++] = e;
+                if (e > 0) {
+                  trains[trainCount].epoch = e;
+                  trains[trainCount].dir   = d.dir;
+                  trainCount++;
+                  added++;
+                }
               }
+            }
+
+            // Sort soonest-first (tiny list, plain insertion sort).
+            for (int a = 1; a < trainCount; a++) {
+              Arrival cur = trains[a];
+              int b = a - 1;
+              while (b >= 0 && trains[b].epoch > cur.epoch) {
+                trains[b + 1] = trains[b];
+                b--;
+              }
+              trains[b + 1] = cur;
             }
 
             fetchEpoch = nowEpoch;
@@ -532,13 +858,42 @@ void loop() {
         http.end();
       }
 
+      // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
+      // Same decoupled pattern as the trains: poll here, draw from the cache.
+      // Anything going wrong just clears the plane; the countdown is unaffected.
+      static unsigned long lastPlaneMs = 0;
+      static bool planeFirst = true;
+      if (planeFirst || millis() - lastPlaneMs >= ADSB_REFETCH_MS) {
+        planeFirst = false;
+        lastPlaneMs = millis();
+
+        Plane p;
+        if (fetchNorthernmostPlane(p)) {
+          // still the same flight? keep the airline/origin we already resolved
+          if (g_plane.valid && g_plane.callsign == p.callsign) {
+            p.airline      = g_plane.airline;
+            p.origin       = g_plane.origin;
+            p.routeChecked = g_plane.routeChecked;
+          }
+          g_plane = p;
+          if (!g_plane.routeChecked) lookupRoute(g_plane);
+        } else {
+          g_plane.valid = false;  // nobody on final in the bounding area
+        }
+      }
+
       if (haveData) {
         // current time: NTP if we have it, else the fetch clock plus elapsed
         long nowEpoch = (long)time(nullptr);
         if (nowEpoch < 1700000000L) {
           nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
         }
-        showArrivals(arrivals, arrivalCount, nowEpoch);
+        showArrivals(trains, trainCount, nowEpoch);
+      }
+
+      // ...then, if there's a plane low over Brooklyn, its details.
+      if (g_plane.valid) {
+        showPlane(g_plane);
       }
 
     } else {
