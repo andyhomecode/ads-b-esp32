@@ -821,7 +821,7 @@ void showBuses(long nowEpoch) {
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
 
-    showFrame(BUS_FEEDS[fi].label, 400);
+    showFrame(BUS_FEEDS[fi].label, 800);
     for (int i = 0; i < g_busCount[fi]; i++) {
       long mins = (g_bus[fi][i].epoch - nowEpoch + 30) / 60;
 
@@ -1187,10 +1187,13 @@ void loop() {
         // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
         showBuses(nowEpoch);
 
-        // ...an active weather alert, if any -- just the event name.
+        // ...an active weather alert, if any -- just the event name, blinking.
         if (g_wxEvent.length()) {
-          showFrame("* WX *", 400);
+          // showFrame("* WX *", 2000);
+          setBrightnessBoth(BRIGHT_FULL);  // no showFrame here to ramp us up
+          blink(true);
           displayText(g_wxEvent);
+          blink(false);
           g_frame = "        ";
         }
       }

@@ -48,9 +48,9 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   no key → the whole bus section is skipped, and a stop with nothing tracked
   (e.g. the M9 overnight) just doesn't draw.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
-  point, a `* WX *` frame then the event name (`Winter Weather Advisory`) — the
-  event only, no headline or instructions. Refreshed every 5 min; nothing shown
-  when it's clear.
+  point, the event name (`Winter Weather Advisory`) scrolls across with the
+  display **blinking** to catch the eye — the event only, no headline or
+  instructions. Refreshed every 5 min; nothing shown when it's clear.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
@@ -207,7 +207,7 @@ More pictures coming
      ~2s each as `1D  2min`, `2U  3min`, ... .
    - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
      City), a header frame + their countdowns.
-   - If the NWS has an active alert for the point, a `* WX *` frame + the event name.
+   - If the NWS has an active alert for the point, the event name, blinking.
    Every frame fades down, scrolls the old data out while the new scrolls in,
    then fades back up.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
