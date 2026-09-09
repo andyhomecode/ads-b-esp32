@@ -66,6 +66,19 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   interface, selectable by switch.
 - **Run Mode**: does its little thing.
 
+### How the plane spotter picks a plane
+
+![LGA approach over Brooklyn: the bounding disc, the approach path, and the plane inside it](LGA-approach.png)
+
+Every `ADSB_REFETCH_MS` it asks [adsb.lol](https://adsb.lol/) for aircraft within
+`ADSB_RADIUS_NM` nautical miles of `ADSB_LAT,ADSB_LON` — the grey disc above,
+centered over Williamsburg right under the LGA approach path (the dashed line).
+Of everything in that disc it keeps only `A3` (airliner-sized) traffic between
+`ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet — i.e. jets actually on final, not
+high-altitude overflights or little planes. Whatever's left, it takes the one
+with the **highest latitude** (northern-most = closest to touchdown at LGA, the
+plane icon above) and puts it on the display.
+
 ## Hardware
 
 - [ESP32-S3 Wroom 1 Dev Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html) (or compatible board)
