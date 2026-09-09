@@ -37,6 +37,16 @@
 #include <ArduinoJson.h>
 #include <map>
 
+// API keys live in include/secrets.h -- gitignored, compiled in, never on
+// GitHub (see include/secrets.h.example). Build still works without it; any
+// feature that needs a key just stays dark.
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#endif
+#ifndef BUSTIME_API_KEY
+  #define BUSTIME_API_KEY ""
+#endif
+
 #define SWITCH_PIN 13  // GPIO pin for mode switch
 
 #define SDA 9
@@ -83,6 +93,15 @@
 // one is just grid metadata and has no alerts).
 #define WX_URL          "https://api.weather.gov/alerts/active?point=40.7168,-73.9861"
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
+
+// --- MTA BusTime (SIRI stop-monitoring) ----------------------------------
+// Upcoming buses at one stop. Needs BUSTIME_API_KEY from include/secrets.h
+// (free key: https://register.developer.obanyc.com/). Empty key -> skipped.
+#define BUS_URL_BASE    "https://bustime.mta.info/api/siri/stop-monitoring-v2.json"
+#define BUS_STOP_REF    "401150"      // Grand St / Clinton St, westbound -> Abingdon Sq
+#define BUS_LINE_PREFIX "M14A"        // this stop also serves the L92 shuttle; drop it
+#define BUS_MAX         3
+#define BUS_REFETCH_MS  30000
 
 // instantiate the two i2c LED controllers
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
@@ -633,6 +652,103 @@ void fetchWeatherAlert() {
 }
 
 
+//  _               _
+// | |__  _   _ ___| |_ ___
+// | '_ \| | | / __| __/ _ \
+// | |_) | |_| \__ \ ||  __/
+// |_.__/ \__,_|___/\__\___|
+//
+// Upcoming M14A buses at Grand St / Clinton St, headed west toward Abingdon Sq.
+// SIRI stop-monitoring; the stop is one-directional so no direction filtering,
+// but it also carries the L92 subway-shuttle bus, so keep BUS_LINE_PREFIX only.
+
+struct BusArr {
+  long epoch;
+  int  stopsAway;
+};
+
+BusArr g_bus[BUS_MAX];
+int    g_busCount = 0;
+
+void fetchBuses() {
+  if (BUSTIME_API_KEY[0] == '\0') return;  // no key compiled in -> feature off
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(String(BUS_URL_BASE) + "?key=" + BUSTIME_API_KEY +
+             "&MonitoringRef=" + BUS_STOP_REF);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("BUS HTTP %d\n", code);
+    http.end();
+    return;  // keep the last list rather than blanking on a blip
+  }
+  String payload = http.getString();
+  http.end();
+
+  // Filter down to just the fields we render.
+  JsonDocument filter;
+  JsonObject fj = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
+                        ["MonitoredStopVisit"][0]["MonitoredVehicleJourney"];
+  fj["PublishedLineName"] = true;
+  fj["MonitoredCall"]["ExpectedArrivalTime"] = true;
+  fj["MonitoredCall"]["AimedArrivalTime"] = true;
+  fj["MonitoredCall"]["NumberOfStopsAway"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("BUS JSON parse error");
+    return;
+  }
+
+  JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
+                        ["MonitoredStopVisit"];
+  g_busCount = 0;
+  for (JsonObject v : visits) {
+    if (g_busCount >= BUS_MAX) break;
+    JsonObject j = v["MonitoredVehicleJourney"];
+
+    // PublishedLineName is an array in SIRI v2 (["M14A-SBS"]); tolerate a
+    // bare string too.
+    JsonVariant ln = j["PublishedLineName"];
+    String line = ln.is<JsonArray>() ? String(ln[0] | "") : String(ln | "");
+    if (!line.startsWith(BUS_LINE_PREFIX)) continue;
+
+    JsonObject mc = j["MonitoredCall"];
+    long e = isoToEpoch(mc["ExpectedArrivalTime"] | "");
+    if (e == 0) e = isoToEpoch(mc["AimedArrivalTime"] | "");
+    if (e == 0) continue;
+
+    g_bus[g_busCount].epoch     = e;
+    g_bus[g_busCount].stopsAway = mc["NumberOfStopsAway"] | -1;
+    g_busCount++;
+  }
+  Serial.printf("BUS: %d M14A\n", g_busCount);
+}
+
+// "M14A BUS" header, then each upcoming bus as "n YYmin" / "n   NOW". SIRI
+// already hands them back soonest-first.
+void showBuses(long nowEpoch) {
+  if (g_busCount == 0) return;
+
+  showFrame("M14A BUS", 400);
+  for (int i = 0; i < g_busCount; i++) {
+    long mins = (g_bus[i].epoch - nowEpoch + 30) / 60;
+
+    char frame[12];
+    if (mins <= 0) {
+      snprintf(frame, sizeof(frame), "%d   NOW", i + 1);
+    } else {
+      if (mins > 99) mins = 99;
+      snprintf(frame, sizeof(frame), "%d %2ldmin", i + 1, mins);
+    }
+    showFrame(frame, 1300);
+  }
+}
+
+
 bool connectToWiFi(const char *ssid, const char *password) {
   WiFi.begin(ssid, password);
   Serial.printf("Connecting to WiFi: %s\n", ssid);
@@ -933,16 +1049,16 @@ void loop() {
         }
       }
 
-      if (haveData) {
-        // current time: NTP if we have it, else the fetch clock plus elapsed
-        long nowEpoch = (long)time(nullptr);
-        if (nowEpoch < 1700000000L) {
-          nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
-        }
-        showArrivals(trains, trainCount, nowEpoch);
+      // --- MTA BusTime: refresh the bus list on its own clock -------------
+      static unsigned long lastBusMs = 0;
+      static bool busFirst = true;
+      if (busFirst || millis() - lastBusMs >= BUS_REFETCH_MS) {
+        busFirst = false;
+        lastBusMs = millis();
+        fetchBuses();
       }
 
-      // --- NWS: refresh the weather alert on its own (slow) clock ----------
+      // --- NWS: refresh the weather alert on its own (slow) clock ---------
       static unsigned long lastWxMs = 0;
       static bool wxFirst = true;
       if (wxFirst || millis() - lastWxMs >= WX_REFETCH_MS) {
@@ -950,6 +1066,19 @@ void loop() {
         lastWxMs = millis();
         fetchWeatherAlert();
       }
+
+      // current time: NTP if we have it, else the fetch clock plus elapsed
+      long nowEpoch = (long)time(nullptr);
+      if (nowEpoch < 1700000000L) {
+        nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
+      }
+
+      if (haveData) {
+        showArrivals(trains, trainCount, nowEpoch);
+      }
+
+      // ...then the M14A buses toward Abingdon Sq, if any.
+      showBuses(nowEpoch);
 
       // ...an active weather alert, if any -- just the event name.
       if (g_wxEvent.length()) {

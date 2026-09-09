@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# API keys / secrets -- compiled in from here, never committed.
+# Copy include/secrets.h.example to include/secrets.h and fill in your keys.
+include/secrets.h

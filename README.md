@@ -38,6 +38,11 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and origin
   (`FROM MIA MIAMI`). Northern-most plane wins — it's the closest to LGA. No
   plane in the area → just the trains, same as before.
+- **M14A bus**: upcoming M14A-SBS buses at Grand St / Clinton St headed west
+  toward Abingdon Sq (`M14A BUS` header, then `1  4min`, `2 12min`, ...). MTA
+  BusTime SIRI; the stop also carries the L92 subway shuttle, which is filtered
+  out. Needs an API key (see [Secrets](#secrets)); no key → the block is just
+  skipped, and nothing shows overnight when no bus is being tracked.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
   point, a `* WX *` frame then the event name (`Winter Weather Advisory`) — the
   event only, no headline or instructions. Refreshed every 5 min; nothing shown
@@ -84,9 +89,28 @@ If you're the type to do this, you probably don't need instructions, but...
 
 1. Clone or download this project.
 2. Open in PlatformIO (or VS Code with PlatformIO extension).
-3. Connect your ESP32 board via USB.
-4. Build and upload the firmware:
+3. `cp include/secrets.h.example include/secrets.h` and paste in your keys
+   (see [Secrets](#secrets)). Optional — it builds fine without it.
+4. Connect your ESP32 board via USB.
+5. Build and upload the firmware:
    - Click the "Upload" button in PlatformIO, or run `platformio run --target upload --environment freenove_esp32_s3_wroom`
+
+### Secrets
+
+API keys are compiled in from `include/secrets.h`, which is **gitignored** — it
+never goes to GitHub. Copy the template and fill it in:
+
+```
+cp include/secrets.h.example include/secrets.h
+```
+
+| Key | Used for | Get one |
+| --- | --- | --- |
+| `BUSTIME_API_KEY` | MTA BusTime (M14A bus block) | <https://register.developer.obanyc.com/> |
+
+`main.cpp` pulls the file in with `#if __has_include("secrets.h")` and defines
+empty fallbacks, so a build with no `secrets.h` still works — the bus block just
+stays dark.
 
 ### Dependencies
 
@@ -136,12 +160,14 @@ More pictures coming
    soonest-first, ~2s each as `1D  2min`, `2U  3min`, ... . Every frame fades
    down, scrolls the old data out while the new data scrolls in, then fades back
    up.
-4. If the NWS has an active alert for the point, a `* WX *` frame + the event
-   name follows the trains.
-5. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
+4. If any M14A buses are tracked toward Abingdon Sq, an `M14A BUS` frame + their
+   countdowns follow.
+5. If the NWS has an active alert for the point, a `* WX *` frame + the event
+   name follows.
+6. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
    follows that: callsign, airline, aircraft type, altitude, origin airport.
    Otherwise it's trains only.
-6. If WiFi fails, it displays "No Wi-fi" and restarts.
+7. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
 
@@ -170,6 +196,11 @@ More pictures coming
 - **Plane altitude band**: `ADSB_ALT_MIN` / `ADSB_ALT_MAX` (feet, default
   800–5000) and `ADSB_CATEGORY` (`A3` = airliner-sized).
 - **Plane refresh rate**: `ADSB_REFETCH_MS` (default 20000).
+- **Bus stop**: `BUS_STOP_REF` in `main.cpp` (default `401150` = Grand St /
+  Clinton St westbound). `BUS_LINE_PREFIX` (`M14A`) keeps only matching routes,
+  `BUS_MAX` (3) caps how many show, `BUS_REFETCH_MS` (30000) is the poll rate.
+  The 6-digit stop code is on the bus-stop sign, or from BusTime's
+  `stops-for-location` API. Needs `BUSTIME_API_KEY` (see [Secrets](#secrets)).
 - **Weather alert point**: `WX_URL` in `main.cpp` — an
   `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
   300000) is how often it's polled.
@@ -192,7 +223,8 @@ More pictures coming
 
 - `src/main.cpp`: Main Arduino sketch with setup, loop, and display functions.
 - `platformio.ini`: PlatformIO configuration for ESP32-S3.
-- `include/`: Header files (if any).
+- `include/secrets.h.example`: template for API keys; copy to `include/secrets.h`
+  (gitignored) and fill in.
 - `lib/`: Local libraries (if any).
 - `case/`: OpenSCAD file for printing the case.
 
@@ -206,6 +238,12 @@ More pictures coming
   BDFM feed at `https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm`
   is protobuf-encoded and no longer needs an API key, if you'd rather decode it
   on-device.
+- **Bus arrivals**: [`bustime.mta.info/api/siri/stop-monitoring-v2.json?key=…&MonitoringRef=<stop>`](https://bustime.mta.info/wiki/Developers/SIRIStopMonitoring)
+  — MTA BusTime SIRI. `MonitoredStopVisit[].MonitoredVehicleJourney`:
+  `PublishedLineName` (an array — `["M14A-SBS"]`), `MonitoredCall.ExpectedArrivalTime`,
+  `MonitoredCall.NumberOfStopsAway`. Needs a free key
+  (<https://register.developer.obanyc.com/>); parsed through an ArduinoJson
+  filter. Empty overnight when nothing's tracked.
 - **Plane positions**: [`api.adsb.lol/v2/point/{lat}/{lon}/{radius_nm}`](https://api.adsb.lol/docs)
   — free, no key, but **requires a non-generic `User-Agent` with contact info**
   (else `403`). Returns an `ac[]` array; we filter to `category == "A3"` in the
@@ -231,7 +269,9 @@ Feel free to submit issues or pull requests for improvements!
 
 ## Credits
 
-- Arrival data via [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/) proxying the MTA GTFS-realtime feed.
+- Train arrivals via [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/) proxying the MTA GTFS-realtime feed.
+- Bus arrivals via [MTA BusTime](https://bustime.mta.info/) (SIRI).
 - Plane data via [adsb.lol](https://adsb.lol/); route/airline lookups via [adsbdb.com](https://www.adsbdb.com/).
+- Weather alerts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.
