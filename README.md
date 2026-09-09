@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.7
+ - version 4.8
  - Sep 9, 2026
 
 ## Features
@@ -33,8 +33,8 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   when one's basically here, `NO F TRN` when nothing's running). Up to
   `NUM_TRAINS` per direction go into the merge.
 - **Plane on approach (takes over the display)**: when an `A3` (large / airliner)
-  aircraft is between `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the bounding
-  disc over Williamsburg, the display shows **only** the `*PLANE*` block —
+  aircraft is between `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the
+  over-Brooklyn box, the display shows **only** the `*PLANE*` block —
   callsign (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and
   origin (`FROM MIA MIAMI`) — and skips trains, buses, and weather until it
   passes. Northern-most plane wins (closest to LGA). Everything keeps fetching in
