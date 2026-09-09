@@ -38,12 +38,14 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and origin
   (`FROM MIA MIAMI`). Northern-most plane wins — it's the closest to LGA. No
   plane in the area → just the trains, same as before.
-- **M14A bus**: upcoming M14A-SBS buses at Grand St / Clinton St headed west
-  toward Abingdon Sq (`M14A BUS` header, then `1B  4min`, `2B 12min`, ... — the
-  `B` matches the trains' `U`/`D`). MTA BusTime SIRI; the stop also carries the
-  L92 subway shuttle, which is filtered out by route. Needs an API key (see
-  [Secrets](#secrets)); no key → the block is skipped, and nothing shows
-  overnight when no bus is being tracked.
+- **Buses**: one block per stop in the `BUS_FEEDS` table — by default the
+  **M14A-SBS** at Grand St / Clinton St westbound → Abingdon Sq, and the **M9**
+  at Essex St / East Broadway westbound → Battery Park City. Each shows its own
+  header (`M14A BUS`, `M9 BUS`) then `1B  4min`, `2B 12min`, ... (the `B` matches
+  the trains' `U`/`D`). MTA BusTime SIRI; each stop carries other routes too, so
+  only the feed's `linePrefix` is kept. Needs an API key (see [Secrets](#secrets));
+  no key → the whole bus section is skipped, and a stop with nothing tracked
+  (e.g. the M9 overnight) just doesn't draw.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
   point, a `* WX *` frame then the event name (`Winter Weather Advisory`) — the
   event only, no headline or instructions. Refreshed every 5 min; nothing shown
@@ -107,7 +109,7 @@ cp include/secrets.h.example include/secrets.h
 
 | Key | Used for | Get one |
 | --- | --- | --- |
-| `BUSTIME_API_KEY` | MTA BusTime (M14A bus block) | <https://register.developer.obanyc.com/> |
+| `BUSTIME_API_KEY` | MTA BusTime (the bus blocks) | <https://register.developer.obanyc.com/> |
 
 `main.cpp` pulls the file in with `#if __has_include("secrets.h")` and defines
 empty fallbacks, so a build with no `secrets.h` still works — the bus block just
@@ -161,8 +163,8 @@ More pictures coming
    soonest-first, ~2s each as `1D  2min`, `2U  3min`, ... . Every frame fades
    down, scrolls the old data out while the new data scrolls in, then fades back
    up.
-4. If any M14A buses are tracked toward Abingdon Sq, an `M14A BUS` frame + their
-   countdowns follow.
+4. For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
+   City), a header frame + their countdowns follow.
 5. If the NWS has an active alert for the point, a `* WX *` frame + the event
    name follows.
 6. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
@@ -197,11 +199,12 @@ More pictures coming
 - **Plane altitude band**: `ADSB_ALT_MIN` / `ADSB_ALT_MAX` (feet, default
   800–5000) and `ADSB_CATEGORY` (`A3` = airliner-sized).
 - **Plane refresh rate**: `ADSB_REFETCH_MS` (default 20000).
-- **Bus stop**: `BUS_STOP_REF` in `main.cpp` (default `401150` = Grand St /
-  Clinton St westbound). `BUS_LINE_PREFIX` (`M14A`) keeps only matching routes,
-  `BUS_MAX` (3) caps how many show, `BUS_REFETCH_MS` (30000) is the poll rate.
-  The 6-digit stop code is on the bus-stop sign, or from BusTime's
-  `stops-for-location` API. Needs `BUSTIME_API_KEY` (see [Secrets](#secrets)).
+- **Bus stops**: the `BUS_FEEDS[]` table in `main.cpp` — one row per stop, each
+  `{ stopRef, linePrefix, label }`. `stopRef` is the 6-digit code (on the
+  bus-stop sign, or from BusTime's `stops-for-location` API); `linePrefix` keeps
+  only matching routes at that stop; `label` is the ≤8-char header frame. Add or
+  remove rows freely. `BUS_MAX` (3) caps arrivals per stop, `BUS_REFETCH_MS`
+  (30000) is the poll rate. Needs `BUSTIME_API_KEY` (see [Secrets](#secrets)).
 - **Weather alert point**: `WX_URL` in `main.cpp` — an
   `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
   300000) is how often it's polled.

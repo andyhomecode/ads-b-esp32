@@ -96,13 +96,25 @@
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
 
 // --- MTA BusTime (SIRI stop-monitoring) ----------------------------------
-// Upcoming buses at one stop. Needs BUSTIME_API_KEY from include/secrets.h
-// (free key: https://register.developer.obanyc.com/). Empty key -> skipped.
+// Upcoming buses at one or more stops. Needs BUSTIME_API_KEY from
+// include/secrets.h (free key: https://register.developer.obanyc.com/).
+// Empty key -> the whole bus section is skipped.
 #define BUS_URL_BASE    "https://bustime.mta.info/api/siri/stop-monitoring-v2.json"
-#define BUS_STOP_REF    "401150"      // Grand St / Clinton St, westbound -> Abingdon Sq
-#define BUS_LINE_PREFIX "M14A"        // this stop also serves the L92 shuttle; drop it
-#define BUS_MAX         3
+#define BUS_MAX         3            // arrivals shown per stop
 #define BUS_REFETCH_MS  30000
+
+// One row per stop. `linePrefix` keeps only matching routes at that stop
+// (stops carry more than one line); `label` is the <=8-char header frame.
+struct BusFeed {
+  const char *stopRef;
+  const char *linePrefix;
+  const char *label;
+};
+const BusFeed BUS_FEEDS[] = {
+  { "401150", "M14A", "M14A BUS" },  // Grand St/Clinton St, W -> Abingdon Sq
+  { "404287", "M9",   "M9 BUS"   },  // Essex St/East Broadway, W -> Battery Pk City
+};
+#define NUM_BUS_FEEDS (sizeof(BUS_FEEDS) / sizeof(BUS_FEEDS[0]))
 
 // instantiate the two i2c LED controllers
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
@@ -666,37 +678,37 @@ void fetchWeatherAlert() {
 // | |_) | |_| \__ \ ||  __/
 // |_.__/ \__,_|___/\__\___|
 //
-// Upcoming M14A buses at Grand St / Clinton St, headed west toward Abingdon Sq.
-// SIRI stop-monitoring; the stop is one-directional so no direction filtering,
-// but it also carries the L92 subway-shuttle bus, so keep BUS_LINE_PREFIX only.
+// Upcoming buses at each stop in BUS_FEEDS (M14A -> Abingdon Sq, M9 -> Battery
+// Pk City). Each stop is one-directional so no direction filtering, but stops
+// carry more than one route, so keep only the feed's linePrefix.
 
 struct BusArr {
   long epoch;
   int  stopsAway;
 };
 
-BusArr g_bus[BUS_MAX];
-int    g_busCount = 0;
+BusArr g_bus[NUM_BUS_FEEDS][BUS_MAX];
+int    g_busCount[NUM_BUS_FEEDS] = {0};
 
-void fetchBuses() {
-  if (BUSTIME_API_KEY[0] == '\0') return;  // no key compiled in -> feature off
+// Fetch one stop and refill g_bus[fi] / g_busCount[fi]. On any HTTP/JSON
+// trouble it leaves the previous list in place.
+void fetchOneBusFeed(int fi) {
+  const BusFeed &feed = BUS_FEEDS[fi];
 
   HTTPClient http;
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
   http.setTimeout(4000);
   http.begin(String(BUS_URL_BASE) + "?key=" + BUSTIME_API_KEY +
-             "&MonitoringRef=" + BUS_STOP_REF);
+             "&MonitoringRef=" + feed.stopRef);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.printf("BUS HTTP %d\n", code);
+    Serial.printf("BUS %s HTTP %d\n", feed.linePrefix, code);
     http.end();
-    return;  // keep the last list rather than blanking on a blip
+    return;
   }
   String payload = http.getString();
   http.end();
-
-  Serial.printf("BUS payload %d bytes\n", payload.length());
 
   // One stop's SIRI response is small (a few KB), so just parse the whole
   // thing -- no filter. (An earlier filter build was silently empty, which is
@@ -705,53 +717,61 @@ void fetchBuses() {
   DeserializationError err =
       deserializeJson(doc, payload, DeserializationOption::NestingLimit(20));
   if (err) {
-    Serial.printf("BUS JSON parse error: %s\n", err.c_str());
+    Serial.printf("BUS %s parse error: %s\n", feed.linePrefix, err.c_str());
     return;
   }
 
   JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
                         ["MonitoredStopVisit"];
-  g_busCount = 0;
+  int n = 0;
   for (JsonObject v : visits) {
-    if (g_busCount >= BUS_MAX) break;
+    if (n >= BUS_MAX) break;
     JsonObject j = v["MonitoredVehicleJourney"];
 
     // PublishedLineName is an array in SIRI v2 (["M14A-SBS"]); tolerate a
     // bare string too.
     JsonVariant ln = j["PublishedLineName"];
     String line = ln.is<JsonArray>() ? String(ln[0] | "") : String(ln | "");
-    if (!line.startsWith(BUS_LINE_PREFIX)) continue;
+    if (!line.startsWith(feed.linePrefix)) continue;
 
     JsonObject mc = j["MonitoredCall"];
     long e = isoToEpoch(mc["ExpectedArrivalTime"] | "");
     if (e == 0) e = isoToEpoch(mc["AimedArrivalTime"] | "");
     if (e == 0) continue;
 
-    g_bus[g_busCount].epoch     = e;
-    g_bus[g_busCount].stopsAway = mc["NumberOfStopsAway"] | -1;
-    g_busCount++;
+    g_bus[fi][n].epoch     = e;
+    g_bus[fi][n].stopsAway = mc["NumberOfStopsAway"] | -1;
+    n++;
   }
-  Serial.printf("BUS: %d M14A\n", g_busCount);
+  g_busCount[fi] = n;
+  Serial.printf("BUS %s: %d\n", feed.linePrefix, n);
 }
 
-// "M14A BUS" header, then each upcoming bus as "nB YYmin" / "nB  NOW" -- the "B"
-// tags it as a bus, matching the trains' "nU" / "nD". SIRI hands them back
-// soonest-first already.
+void fetchBuses() {
+  if (BUSTIME_API_KEY[0] == '\0') return;  // no key compiled in -> section off
+  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) fetchOneBusFeed(fi);
+}
+
+// For each stop with buses: its label header ("M14A BUS" / "M9 BUS"), then each
+// arrival as "nB YYmin" / "nB  NOW" -- "B" tags it a bus, matching the trains'
+// "nU" / "nD". SIRI hands them back soonest-first already.
 void showBuses(long nowEpoch) {
-  if (g_busCount == 0) return;
+  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
+    if (g_busCount[fi] == 0) continue;
 
-  showFrame("M14A BUS", 400);
-  for (int i = 0; i < g_busCount; i++) {
-    long mins = (g_bus[i].epoch - nowEpoch + 30) / 60;
+    showFrame(BUS_FEEDS[fi].label, 400);
+    for (int i = 0; i < g_busCount[fi]; i++) {
+      long mins = (g_bus[fi][i].epoch - nowEpoch + 30) / 60;
 
-    char frame[12];
-    if (mins <= 0) {
-      snprintf(frame, sizeof(frame), "%dB  NOW", i + 1);
-    } else {
-      if (mins > 99) mins = 99;
-      snprintf(frame, sizeof(frame), "%dB %2ldmin", i + 1, mins);
+      char frame[12];
+      if (mins <= 0) {
+        snprintf(frame, sizeof(frame), "%dB  NOW", i + 1);
+      } else {
+        if (mins > 99) mins = 99;
+        snprintf(frame, sizeof(frame), "%dB %2ldmin", i + 1, mins);
+      }
+      showFrame(frame, 1300);
     }
-    showFrame(frame, 1300);
   }
 }
 
