@@ -108,11 +108,11 @@
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
 
 // --- USGS earthquakes near Tokyo ---------------------------------------------
-// The 5 most recent M>=4 within 300 km of Tokyo. We only *show* one if it's big
-// (mag > EQ_MIN_MAG) or tsunami-flagged, AND it happened in the last EQ_MAX_AGE_S
+// The 5 most recent M>=4 within 300 km of Tokyo. We only *show* one if it's
+// mag >= EQ_MIN_MAG or tsunami-flagged, AND it happened in the last EQ_MAX_AGE_S
 // seconds -- needs an NTP clock for that window.
 #define EQ_URL          "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=35.68&longitude=139.77&maxradiuskm=300&minmagnitude=4&orderby=time&limit=5"
-#define EQ_MIN_MAG      5.0f
+#define EQ_MIN_MAG      4.3f
 #define EQ_MAX_AGE_S    86400         // 24 h
 #define EQ_REFETCH_MS   600000        // 10 min
 
@@ -829,18 +829,12 @@ void fetchWeatherAlert() {
 //  \__, |\__,_|\__,_| |_|\_\___|
 //     |_|
 //
-// A big earthquake near Tokyo. USGS gives the recent M4+ list; we surface one
-// only if it's mag > EQ_MIN_MAG or tsunami-flagged, and only if it landed in the
-// last EQ_MAX_AGE_S seconds.
+// A notable earthquake near Tokyo. USGS gives the recent M4+ list; we surface
+// one only if it's mag >= EQ_MIN_MAG or tsunami-flagged, and only if it landed
+// in the last EQ_MAX_AGE_S seconds. g_quakeLine is one ready-to-scroll string
+// (or "" when nothing) -- shown exactly like a weather alert.
 
-struct Quake {
-  bool   show = false;
-  float  mag  = 0;
-  bool   tsunami = false;
-  String place;                       // "219 KM SSE OF WADA, JAPAN"
-};
-
-Quake g_quake;
+String g_quakeLine;  // "TOKYO EQ M4.7 74 KM E OF TOMIOKA, JAPAN"; "" when quiet
 
 void fetchQuake() {
   long now = (long)time(nullptr);
@@ -870,7 +864,7 @@ void fetchQuake() {
     return;
   }
 
-  g_quake.show = false;
+  g_quakeLine = "";
   for (JsonObject f : doc["features"].as<JsonArray>()) {   // newest first
     JsonObject pr = f["properties"];
     float     mag = pr["mag"] | 0.0f;
@@ -879,17 +873,17 @@ void fetchQuake() {
     long      age = now - (long)(tms / 1000);
 
     if (age < 0 || age > EQ_MAX_AGE_S) continue;            // too old / clock skew
-    if (mag <= EQ_MIN_MAG && !tsu) continue;                // not a jolt, no tsunami
+    if (mag < EQ_MIN_MAG && !tsu) continue;                 // not big enough, no tsunami
 
-    g_quake.show    = true;
-    g_quake.mag     = mag;
-    g_quake.tsunami = tsu;
-    g_quake.place   = String(pr["place"] | "");
-    g_quake.place.toUpperCase();
+    String place = String(pr["place"] | "");
+    place.toUpperCase();
+    g_quakeLine  = tsu ? "TSUNAMI " : "TOKYO EQ ";
+    g_quakeLine += "M" + String(mag, 1);
+    if (place.length()) g_quakeLine += " " + place;
     break;
   }
-  Serial.printf("EQ: %s\n", g_quake.show ? g_quake.place.c_str() : "(none)");
-  progEnd(g_quake.show ? '*' : '0');
+  Serial.printf("EQ: %s\n", g_quakeLine.length() ? g_quakeLine.c_str() : "(none)");
+  progEnd(g_quakeLine.length() ? '*' : '0');
 }
 
 
@@ -1370,15 +1364,11 @@ void loop() {
           g_frame = "        ";
         }
 
-        // ...a big Tokyo earthquake in the last 24h, blinking.
-        if (g_quake.show) {
+        // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
+        if (g_quakeLine.length()) {
           setBrightnessBoth(BRIGHT_FULL);
           blink(true);
-          displayText(g_quake.tsunami ? "TSUNAMI!" : "TOKYO EQ");
-          char m[12];
-          snprintf(m, sizeof(m), "M %.1f", g_quake.mag);
-          displayText(m);
-          if (g_quake.place.length()) displayText(g_quake.place);
+          displayText(g_quakeLine);
           blink(false);
           g_frame = "        ";
         }

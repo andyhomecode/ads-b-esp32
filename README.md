@@ -52,9 +52,10 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   display **blinking** to catch the eye — the event only, no headline or
   instructions. Refreshed every 5 min; nothing shown when it's clear.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
-  Tokyo in the last 24 h that's **magnitude > 5** *or* tsunami-flagged, it blinks
-  `TOKYO EQ` (or `TSUNAMI!`), then `M 5.8`, then the place. Checked every 10 min;
-  needs the NTP clock for the 24 h window. Nothing shown otherwise.
+  Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
+  tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
+  TOMIOKA, JAPAN` (or `TSUNAMI ...`) — shown just like the weather alert. Checked
+  every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
@@ -217,8 +218,8 @@ More pictures coming
    - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
      City), a header frame + their countdowns.
    - If the NWS has an active alert for the point, the event name, blinking.
-   - If USGS has a big/tsunami Tokyo quake in the last 24 h, `TOKYO EQ` /
-     `TSUNAMI!` + magnitude + place, blinking.
+   - If USGS has an M≥4.3 / tsunami Tokyo quake in the last 24 h, one blinking
+     line: `TOKYO EQ M4.7 74 KM E OF TOMIOKA, JAPAN`.
    Every frame fades down, scrolls the old data out while the new scrolls in,
    then fades back up.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
@@ -260,9 +261,9 @@ More pictures coming
   `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
   300000) is how often it's polled.
 - **Earthquake watch**: `EQ_URL` (the `latitude`/`longitude`/`maxradiuskm` in it
-  aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (5.0), `EQ_MAX_AGE_S` (86400 =
-  24 h), `EQ_REFETCH_MS` (600000). Shows a quake only if `mag > EQ_MIN_MAG` **or**
-  it's tsunami-flagged, and only within the age window.
+  aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (4.3), `EQ_MAX_AGE_S` (86400 =
+  24 h), `EQ_REFETCH_MS` (600000). Shows a quake only if `mag >= EQ_MIN_MAG`
+  **or** it's tsunami-flagged, and only within the age window.
 - **User-Agent**: `USER_AGENT` in `main.cpp` — **must** carry real contact info.
   adsb.lol returns `403 "User-Agent too generic; include valid contact info."`
   for a blank or generic UA, which is what silently killed the original
@@ -325,7 +326,7 @@ More pictures coming
   `?format=geojson&latitude=&longitude=&maxradiuskm=&minmagnitude=4&orderby=time&limit=5`
   — free, no key, ~4 KB. `features[].properties`: `mag`, `place` (English),
   `time` (epoch **ms**), `tsunami` (0/1). We scan the 5 for the newest that's
-  `mag > EQ_MIN_MAG` or `tsunami` and under `EQ_MAX_AGE_S` old. Empty
+  `mag >= EQ_MIN_MAG` or `tsunami` and under `EQ_MAX_AGE_S` old. Empty
   `features[]` = all clear.
 
 ## License
