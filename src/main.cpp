@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.2 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.3 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
 // LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
@@ -917,7 +917,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.2");
+  displayText(" V 4.3");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -1100,23 +1100,25 @@ void loop() {
         nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
       }
 
-      if (haveData) {
-        showArrivals(trains, trainCount, nowEpoch);
-      }
-
-      // ...then the M14A buses toward Abingdon Sq, if any.
-      showBuses(nowEpoch);
-
-      // ...an active weather alert, if any -- just the event name.
-      if (g_wxEvent.length()) {
-        showFrame("* WX *", 400);
-        displayText(g_wxEvent);
-        g_frame = "        ";
-      }
-
-      // ...then, if there's a plane low over Brooklyn, its details.
       if (g_plane.valid) {
+        // A plane over Brooklyn is the main event -- when one's up there, it's
+        // all we show. Trains/buses/weather keep fetching in the background so
+        // they're current again the moment it passes.
         showPlane(g_plane);
+      } else {
+        if (haveData) {
+          showArrivals(trains, trainCount, nowEpoch);
+        }
+
+        // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
+        showBuses(nowEpoch);
+
+        // ...an active weather alert, if any -- just the event name.
+        if (g_wxEvent.length()) {
+          showFrame("* WX *", 400);
+          displayText(g_wxEvent);
+          g_frame = "        ";
+        }
       }
 
     } else {

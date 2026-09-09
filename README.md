@@ -6,9 +6,9 @@ uptown and downtown** — at the **East Broadway** station on the Lower East Sid
 on dual 14-segment LED displays.
 
 And because the hardware started life as an LGA plane spotter: whenever there's an
-airliner low over Brooklyn on final into **LaGuardia**, it slips the northern-most
-one (the one closest to touchdown) in between subway passes — flight number,
-airline, origin airport, aircraft type. It also shows the current **NWS weather
+airliner low over Brooklyn on final into **LaGuardia**, the plane takes over the
+whole display — flight number, airline, origin airport, aircraft type — until it
+passes. It also shows nearby **bus** countdowns and the current **NWS weather
 alert** for the neighborhood, if there is one.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.2
+ - version 4.3
  - Sep 9, 2026
 
 ## Features
@@ -32,12 +32,13 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   `D` (downtown / Brooklyn): `1D  2min`, `2U  3min`, `3D  6min`, ... (`nX  NOW`
   when one's basically here, `NO F TRN` when nothing's running). Up to
   `NUM_TRAINS` per direction go into the merge.
-- **Plane on approach**: when an `A3` (large / airliner) aircraft is between
-  `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the bounding disc over
-  Williamsburg, the display adds a `*PLANE*` block after the trains: callsign
-  (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and origin
-  (`FROM MIA MIAMI`). Northern-most plane wins — it's the closest to LGA. No
-  plane in the area → just the trains, same as before.
+- **Plane on approach (takes over the display)**: when an `A3` (large / airliner)
+  aircraft is between `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the bounding
+  disc over Williamsburg, the display shows **only** the `*PLANE*` block —
+  callsign (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and
+  origin (`FROM MIA MIAMI`) — and skips trains, buses, and weather until it
+  passes. Northern-most plane wins (closest to LGA). Everything keeps fetching in
+  the background, so the trains/buses are current the moment the sky clears.
 - **Buses**: one block per stop in the `BUS_FEEDS` table — by default the
   **M14A-SBS** at Grand St / Clinton St westbound → Abingdon Sq, and the **M9**
   at Essex St / East Broadway westbound → Battery Park City. Each shows its own
@@ -159,18 +160,18 @@ More pictures coming
 
 1. Set the mode switch to **RUN** position (HIGH).
 2. The device connects to WiFi, syncs the clock over NTP, and starts fetching arrival data.
-3. It cycles: `E B'WAY` (~1s), then the next few F trains either direction,
-   soonest-first, ~2s each as `1D  2min`, `2U  3min`, ... . Every frame fades
-   down, scrolls the old data out while the new data scrolls in, then fades back
-   up.
-4. For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
-   City), a header frame + their countdowns follow.
-5. If the NWS has an active alert for the point, a `* WX *` frame + the event
-   name follows.
-6. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
-   follows that: callsign, airline, aircraft type, altitude, origin airport.
-   Otherwise it's trains only.
-7. If WiFi fails, it displays "No Wi-fi" and restarts.
+3. **If an airliner is low over Brooklyn on final into LGA**, the display shows
+   only the `*PLANE*` block — callsign, airline, aircraft type, altitude, origin
+   airport — and nothing else until it passes.
+4. **Otherwise** it cycles:
+   - `E B'WAY` (~1s), then the next few F trains either direction, soonest-first,
+     ~2s each as `1D  2min`, `2U  3min`, ... .
+   - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
+     City), a header frame + their countdowns.
+   - If the NWS has an active alert for the point, a `* WX *` frame + the event name.
+   Every frame fades down, scrolls the old data out while the new scrolls in,
+   then fades back up.
+5. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
 
