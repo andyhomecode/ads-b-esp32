@@ -431,8 +431,7 @@ static const uint16_t MORPH_ZERO[] = {          // '-' -> '0'
   SEG_MID,
   SEG_MID | ALPHANUM_SEG_A | ALPHANUM_SEG_D,    // dash + top & bottom rails
   SEG_MID | SEG_RING,                           // ring closed around the dash
-  SEG_RING,                                     // dash dissolves
-  SEG_RING | SEG_SLASH,                         // 0x0C3F == '0'
+  SEG_RING | SEG_SLASH,                         // dash gone -> 0x0C3F == '0'
 };
 
 static char g_prog[9] = "        ";
@@ -651,11 +650,25 @@ bool fetchNorthernmostPlane(Plane &out) {
   return true;
 }
 
-// Resolve airline + origin for p.callsign. Local table first (short names), then
-// adsbdb for anything not in it and for the origin airport.
-void lookupRoute(Plane &p) {
-  p.routeChecked = true;
+static bool airportIsLGA(JsonObjectConst ap) {
+  return String(ap["iata_code"] | "") == "LGA" ||
+         String(ap["icao_code"] | "") == "KLGA";
+}
 
+// Resolve airline + origin for p.callsign. Local table first (short names), then
+// adsbdb for anything not in it and for the airport.
+//
+// adsbdb keys on the callsign and returns that callsign's *canonical* route, not
+// the leg this aircraft is actually flying -- so it can be stale (wrong airport)
+// or reversed. But we already know this plane is on final into LGA, so LGA is
+// the destination: take whichever end of adsbdb's route is NOT LGA as the
+// origin, and if neither end is LGA the record is for some other flight -- show
+// nothing rather than a wrong airport.
+//
+// routeChecked is only set once adsbdb gives a definitive answer (200 or a 404
+// "unknown callsign"); a connection/timeout failure leaves it false so the next
+// refetch retries instead of caching a blank origin for the whole pass.
+void lookupRoute(Plane &p) {
   if (p.callsign.length() >= 3) {
     String icao3 = p.callsign.substring(0, 3);
     if (airlineLookup.count(icao3)) p.airline = airlineLookup[icao3];
@@ -669,28 +682,39 @@ void lookupRoute(Plane &p) {
   http.setTimeout(4000);
   http.begin(String(ROUTE_URL_BASE) + p.callsign);
   int code = http.GET();
-  char pc;
+  char pc = 'X';
+
   if (code == HTTP_CODE_OK) {
+    p.routeChecked = true;
     pc = '0';
     JsonDocument doc;
     if (!deserializeJson(doc, http.getString())) {
       JsonObject fr = doc["response"]["flightroute"];
       if (!fr.isNull()) {
-        pc = '*';
         if (p.airline.isEmpty())
           p.airline = String(fr["airline"]["name"] | "");
 
-        String oiata = String(fr["origin"]["iata_code"] | "");
-        String ocity = String(fr["origin"]["municipality"] | "");
-        if (!oiata.isEmpty() && oiata != "LGA") {
-          p.origin = ocity.isEmpty() ? oiata : (oiata + " " + ocity);
+        JsonObjectConst o = fr["origin"];
+        JsonObjectConst d = fr["destination"];
+        JsonObjectConst from;
+        if      (airportIsLGA(d)) from = o;   // normal:  X -> LGA
+        else if (airportIsLGA(o)) from = d;   // reversed: LGA -> X, so we're X -> LGA
+        // else: neither end is LGA -> record doesn't match this arrival
+
+        String fi = String(from["iata_code"] | "");
+        if (!fi.isEmpty()) {
+          String fc = String(from["municipality"] | "");
+          p.origin = fc.isEmpty() ? fi : (fi + " " + fc);
           p.origin.toUpperCase();
+          pc = '*';
         }
       }
     }
+  } else if (code == HTTP_CODE_NOT_FOUND) {
+    p.routeChecked = true;                    // adsbdb genuinely has no route
+    pc = '0';
   } else {
-    Serial.printf("route HTTP %d\n", code);   // 404 == unknown callsign, fine
-    pc = (code == HTTP_CODE_NOT_FOUND) ? '0' : 'X';
+    Serial.printf("route HTTP %d (will retry)\n", code);
   }
   http.end();
   progEnd(pc);
