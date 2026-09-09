@@ -17,8 +17,8 @@ It's an ESP32-based device that pulls real-time arrival data from the MTA's
 GTFS-realtime feed (via the [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/)
 JSON proxy, so no protobuf parsing on the microcontroller) and cycles through
 the minutes-to-arrival for the next few trains each way, plus plane data from
-[adsb.lol](https://adsb.lol/) / [adsbdb.com](https://www.adsbdb.com/) and weather
-alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
+[adsb.lol](https://adsb.lol/) and weather alerts from
+[api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
  - version 4.6
@@ -295,11 +295,15 @@ More pictures coming
   — free, no key, but **requires a non-generic `User-Agent` with contact info**
   (else `403`). Returns an `ac[]` array; we filter to `category == "A3"` in the
   altitude band and take the highest `lat`.
-- **Plane routes**: [`api.adsbdb.com/v0/callsign/{callsign}`](https://www.adsbdb.com/)
-  — free callsign → airline + origin/destination airports. Replaces adsb.lol's
-  old `/api/0/routeset`, which now returns an empty `201` for any request.
-  `404 "unknown callsign"` just means no route on file; the plane still shows
-  without an origin.
+- **Plane routes**: `POST api.adsb.lol/api/0/routeset` — the same lookup the
+  adsb.lol web GUI uses. Body `{"planes":[{"callsign","lat","lng"}]}`; returns
+  `_airports[]` + a `plausible` flag, and is position-aware so it resolves the
+  right leg of a multi-stop route. **Only answers if the request carries a
+  `Referer` from an `adsb.lol` origin** — otherwise an empty `201` (which is why
+  this was mistaken for decommissioned). Since the plane is on final into LGA,
+  the origin is the `_airports` entry just before the LGA one. (adsbdb.com was
+  used here before but its callsign→route table is often stale — it had RPA5753
+  as JFK→CLE when it was really PIT→LGA.)
 - **Weather alerts**: [`api.weather.gov/alerts/active?point={lat},{lon}`](https://www.weather.gov/documentation/services-web-api)
   — free, no key. Returns a GeoJSON `FeatureCollection`; we read
   `features[0].properties.event` (via an ArduinoJson filter, since full alert
@@ -318,7 +322,7 @@ Feel free to submit issues or pull requests for improvements!
 
 - Train arrivals via [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/) proxying the MTA GTFS-realtime feed.
 - Bus arrivals via [MTA BusTime](https://bustime.mta.info/) (SIRI).
-- Plane data via [adsb.lol](https://adsb.lol/); route/airline lookups via [adsbdb.com](https://www.adsbdb.com/).
+- Plane positions and routes via [adsb.lol](https://adsb.lol/); airline names from a small built-in table.
 - Weather alerts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.

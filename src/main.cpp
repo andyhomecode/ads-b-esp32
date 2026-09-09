@@ -83,9 +83,15 @@
 #define ADSB_ALT_MAX    5000          // ft
 #define ADSB_REFETCH_MS 20000         // planes move fast; poll sooner than the trains
 
-// adsbdb.com: free callsign -> airline + route lookup. Replaces adsb.lol's old
-// /api/0/routeset endpoint, which now returns an empty 201 for everything.
-#define ROUTE_URL_BASE  "https://api.adsbdb.com/v0/callsign/"
+// adsb.lol's route lookup -- the same one the web GUI uses. POST a callsign +
+// the plane's current lat/lng; it returns the airports and a `plausible` flag,
+// and (being position-aware) resolves the right leg of multi-stop routes. It
+// answers an empty 201 unless the request carries a Referer from an adsb.lol
+// origin -- a soft anti-abuse gate, hence ROUTE_REFERER below. (adsbdb.com was
+// tried here first but its callsign->route table is often stale/wrong -- e.g.
+// it had RPA5753 as JFK->CLE when it was really PIT->LGA.)
+#define ROUTE_URL      "https://api.adsb.lol/api/0/routeset"
+#define ROUTE_REFERER  "https://adsb.lol/"
 
 // --- NWS weather alerts ----------------------------------------------------
 // Active watches / warnings / advisories for our point. If the feed carries any
@@ -143,7 +149,8 @@ bool isConnected = false;  // global variable to show WiFi state
 
 
 // ICAO airline + aircraft-type codes -> friendly names. Offline and punchy;
-// covers what actually flies the LGA approach. adsbdb fills in anything missing.
+// covers what actually flies the LGA approach. Anything not here shows as
+// "Unknown" (the route API gives airports, not a friendly airline name).
 std::map<String, String> airlineLookup;
 std::map<String, String> icacoLookup;
 
@@ -577,9 +584,10 @@ struct Plane {
   String callsign;              // trimmed, dot stripped: "AAL1389"
   String typeCode;              // ICAO type code: "A321"
   long   altFt = 0;
+  float  lat = 0, lon = 0;      // last position -- fed to the route lookup
   String airline;               // resolved friendly name, or "" until looked up
   String origin;                // "MIA MIAMI", or "" if unknown / already at LGA
-  bool   routeChecked = false;  // already hit adsbdb for this callsign?
+  bool   routeChecked = false;  // already resolved the route for this callsign?
 };
 
 Plane g_plane;
@@ -646,80 +654,72 @@ bool fetchNorthernmostPlane(Plane &out) {
   out.callsign = cs;
   out.typeCode = String(best["t"] | "");
   out.altFt    = alt;
+  out.lat      = best["lat"] | 0.0f;
+  out.lon      = best["lon"] | 0.0f;
   progEnd('*');
   return true;
 }
 
 static bool airportIsLGA(JsonObjectConst ap) {
-  return String(ap["iata_code"] | "") == "LGA" ||
-         String(ap["icao_code"] | "") == "KLGA";
+  return String(ap["iata"] | "") == "LGA" ||
+         String(ap["icao"] | "") == "KLGA";
 }
 
-// Resolve airline + origin for p.callsign. Local table first (short names), then
-// adsbdb for anything not in it and for the airport.
-//
-// adsbdb keys on the callsign and returns that callsign's *canonical* route, not
-// the leg this aircraft is actually flying -- so it can be stale (wrong airport)
-// or reversed. But we already know this plane is on final into LGA, so LGA is
-// the destination: take whichever end of adsbdb's route is NOT LGA as the
-// origin, and if neither end is LGA the record is for some other flight -- show
-// nothing rather than a wrong airport.
-//
-// routeChecked is only set once adsbdb gives a definitive answer (200 or a 404
-// "unknown callsign"); a connection/timeout failure leaves it false so the next
-// refetch retries instead of caching a blank origin for the whole pass.
+// Resolve airline + origin for p. Airline name comes from the local table
+// (short, offline). Origin comes from adsb.lol's routeset: POST the callsign
+// plus the plane's current position, get back `_airports` and `plausible`.
+// Since this plane is on final into LGA, LGA is the last airport in the route
+// -- the origin is the one right before it. If the route has no LGA, or isn't
+// plausible, or the lookup errors, we show no origin (better than a wrong one)
+// and, on a transport error, leave routeChecked false so the next pass retries.
 void lookupRoute(Plane &p) {
   if (p.callsign.length() >= 3) {
     String icao3 = p.callsign.substring(0, 3);
     if (airlineLookup.count(icao3)) p.airline = airlineLookup[icao3];
   }
+  if (p.airline.isEmpty()) p.airline = "Unknown";
 
   progBegin();
+
+  char body[96];
+  snprintf(body, sizeof(body),
+           "{\"planes\":[{\"callsign\":\"%s\",\"lat\":%.4f,\"lng\":%.4f}]}",
+           p.callsign.c_str(), p.lat, p.lon);
 
   HTTPClient http;
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
   http.setTimeout(4000);
-  http.begin(String(ROUTE_URL_BASE) + p.callsign);
-  int code = http.GET();
+  http.begin(ROUTE_URL);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Referer", ROUTE_REFERER);   // routeset 201s empty without this
+  int code = http.POST((uint8_t *)body, strlen(body));
   char pc = 'X';
 
-  if (code == HTTP_CODE_OK) {
+  if (code == HTTP_CODE_OK) {                 // 201 == the Referer gate rejected us
     p.routeChecked = true;
     pc = '0';
     JsonDocument doc;
-    if (!deserializeJson(doc, http.getString())) {
-      JsonObject fr = doc["response"]["flightroute"];
-      if (!fr.isNull()) {
-        if (p.airline.isEmpty())
-          p.airline = String(fr["airline"]["name"] | "");
-
-        JsonObjectConst o = fr["origin"];
-        JsonObjectConst d = fr["destination"];
-        JsonObjectConst from;
-        if      (airportIsLGA(d)) from = o;   // normal:  X -> LGA
-        else if (airportIsLGA(o)) from = d;   // reversed: LGA -> X, so we're X -> LGA
-        // else: neither end is LGA -> record doesn't match this arrival
-
-        String fi = String(from["iata_code"] | "");
-        if (!fi.isEmpty()) {
-          String fc = String(from["municipality"] | "");
-          p.origin = fc.isEmpty() ? fi : (fi + " " + fc);
-          p.origin.toUpperCase();
-          pc = '*';
-        }
+    if (!deserializeJson(doc, http.getString()) && (doc[0]["plausible"] | false)) {
+      JsonArrayConst aps = doc[0]["_airports"];
+      // walk back from the end to the last LGA entry that has a predecessor
+      for (int i = aps.size() - 1; i >= 1; i--) {
+        if (!airportIsLGA(aps[i])) continue;
+        JsonObjectConst from = aps[i - 1];
+        String fi = String(from["iata"] | "");
+        if (fi.isEmpty()) break;
+        String fc = String(from["location"] | "");
+        p.origin = fc.isEmpty() ? fi : (fi + " " + fc);
+        p.origin.toUpperCase();
+        pc = '*';
+        break;
       }
     }
-  } else if (code == HTTP_CODE_NOT_FOUND) {
-    p.routeChecked = true;                    // adsbdb genuinely has no route
-    pc = '0';
   } else {
     Serial.printf("route HTTP %d (will retry)\n", code);
   }
   http.end();
   progEnd(pc);
-
-  if (p.airline.isEmpty()) p.airline = "Unknown";
 }
 
 // One plane pass. showFrame fades us in from the countdown; the details scroll
