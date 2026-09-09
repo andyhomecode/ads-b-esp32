@@ -28,6 +28,7 @@
 #include <Preferences.h>
 #include <HTTPClient.h>
 #include <time.h>
+#include <string.h>  // strchr, for isoToEpoch
 
 // LED output
 #include <Wire.h>
@@ -397,24 +398,31 @@ static long daysFromCivil(int y, int m, int d) {
   return era * 146097L + doe - 719468L;
 }
 
-// Parse an ISO-8601 timestamp with a numeric TZ offset (or trailing "Z")
-// into a UTC epoch. Returns 0 if it can't be parsed.
+// Parse an ISO-8601 timestamp into a UTC epoch. Handles a trailing "Z", a
+// numeric "+HH:MM" / "-HH:MM" offset, and optional fractional seconds
+// ("...:09.967-04:00" -- BusTime sends these; the MTA/NWS feeds don't).
+// Returns 0 if it can't be parsed.
 long isoToEpoch(const char *iso) {
   if (iso == nullptr || iso[0] == '\0') return 0;
 
   int Y, Mo, D, h, m, s;
-  char sign = 'Z';
-  int tzh = 0, tzm = 0;
-  int n = sscanf(iso, "%d-%d-%dT%d:%d:%d%c%d:%d",
-                 &Y, &Mo, &D, &h, &m, &s, &sign, &tzh, &tzm);
-  if (n < 6) return 0;
+  if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &Y, &Mo, &D, &h, &m, &s) < 6) return 0;
 
   long utc = daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L + s;
 
-  // Back out the offset so we're in true UTC. "14:30-04:00" is 18:30 UTC.
-  if (n >= 7 && (sign == '+' || sign == '-')) {
-    long offset = (long)tzh * 3600 + (long)tzm * 60;
-    utc += (sign == '-') ? offset : -offset;
+  // Find the zone designator: scan past the time (and any ".fff") to the first
+  // 'Z' / '+' / '-' after the 'T'.
+  const char *t = strchr(iso, 'T');
+  if (t) {
+    const char *z = t + 1;
+    while (*z && *z != 'Z' && *z != '+' && *z != '-') z++;
+    if (*z == '+' || *z == '-') {
+      int tzh = 0, tzm = 0;
+      if (sscanf(z + 1, "%d:%d", &tzh, &tzm) >= 1) {
+        long offset = (long)tzh * 3600 + (long)tzm * 60;
+        utc += (*z == '-') ? offset : -offset;  // "14:30-04:00" is 18:30 UTC
+      }
+    }
   }
   return utc;
 }
@@ -728,8 +736,9 @@ void fetchBuses() {
   Serial.printf("BUS: %d M14A\n", g_busCount);
 }
 
-// "M14A BUS" header, then each upcoming bus as "n YYmin" / "n   NOW". SIRI
-// already hands them back soonest-first.
+// "M14A BUS" header, then each upcoming bus as "nB YYmin" / "nB  NOW" -- the "B"
+// tags it as a bus, matching the trains' "nU" / "nD". SIRI hands them back
+// soonest-first already.
 void showBuses(long nowEpoch) {
   if (g_busCount == 0) return;
 
@@ -739,10 +748,10 @@ void showBuses(long nowEpoch) {
 
     char frame[12];
     if (mins <= 0) {
-      snprintf(frame, sizeof(frame), "%d   NOW", i + 1);
+      snprintf(frame, sizeof(frame), "%dB  NOW", i + 1);
     } else {
       if (mins > 99) mins = 99;
-      snprintf(frame, sizeof(frame), "%d %2ldmin", i + 1, mins);
+      snprintf(frame, sizeof(frame), "%dB %2ldmin", i + 1, mins);
     }
     showFrame(frame, 1300);
   }
