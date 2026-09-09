@@ -72,12 +72,18 @@
 // request below sends a real UA with contact info.
 #define USER_AGENT      "ads-b-esp32/4.7 (+https://github.com/andyhomecode/ads-b-esp32)"
 
-// Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
-// LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
+// We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
+// inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
+// corridor west of Manhattan, so LGA arrivals coming up the river were sneaking
+// in. Box: roughly Greenpoint down to Green-Wood, East River across to East NY.
 #define ADSB_URL_BASE   "https://api.adsb.lol/v2/point/"
-#define ADSB_LAT        "40.6875"
+#define ADSB_LAT        "40.6875"     // disc centre (central Brooklyn)
 #define ADSB_LON        "-73.9845"
-#define ADSB_RADIUS_NM  "6"
+#define ADSB_RADIUS_NM  "6"           // wide enough to cover the box + margin
+#define BBOX_LAT_MIN    40.61f        // over-Brooklyn box
+#define BBOX_LAT_MAX    40.74f
+#define BBOX_LON_MIN   -73.99f        // East River / Brooklyn waterfront -- cuts Manhattan & the Hudson
+#define BBOX_LON_MAX   -73.85f
 #define ADSB_CATEGORY   "A3"          // A3 == large aircraft (75k-300k lb): airliners
 #define ADSB_ALT_MIN    800           // ft -- on final, low over Brooklyn
 #define ADSB_ALT_MAX    5000          // ft
@@ -635,6 +641,10 @@ bool fetchNorthernmostPlane(Plane &out) {
     if (alt < ADSB_ALT_MIN || alt > ADSB_ALT_MAX) continue;
 
     float lat = a["lat"] | -1000.0f;
+    float lon = a["lon"] | -1000.0f;
+    if (lat < BBOX_LAT_MIN || lat > BBOX_LAT_MAX ||
+        lon < BBOX_LON_MIN || lon > BBOX_LON_MAX) continue;  // must be over Brooklyn
+
     if (lat > bestLat) {
       bestLat = lat;
       best = a;

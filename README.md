@@ -79,13 +79,15 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 ![LGA approach over Brooklyn: the bounding disc, the approach path, and the plane inside it](LGA-approach.png)
 
 Every `ADSB_REFETCH_MS` it asks [adsb.lol](https://adsb.lol/) for aircraft within
-`ADSB_RADIUS_NM` nautical miles of `ADSB_LAT,ADSB_LON` — the grey disc above,
-centered over Williamsburg right under the LGA approach path (the dashed line).
-Of everything in that disc it keeps only `A3` (airliner-sized) traffic between
-`ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet — i.e. jets actually on final, not
-high-altitude overflights or little planes. Whatever's left, it takes the one
-with the **highest latitude** (northern-most = closest to touchdown at LGA, the
-plane icon above) and puts it on the display.
+`ADSB_RADIUS_NM` nautical miles of `ADSB_LAT,ADSB_LON` — roughly the grey disc
+above. adsb.lol has no free bounding-box query, and that disc reaches the Hudson
+corridor west of Manhattan, so the results are then clipped to a lat/lon box
+over Brooklyn (`BBOX_LAT_MIN/MAX`, `BBOX_LON_MIN/MAX` — Greenpoint down to
+Green-Wood, the East River across to East New York). Of what's left in the box it
+keeps only `A3` (airliner-sized) traffic between `ADSB_ALT_MIN` and
+`ADSB_ALT_MAX` feet — jets actually on final, not high overflights or little
+planes — and shows the one with the **highest latitude** (northern-most =
+closest to touchdown at LGA, the plane icon above).
 
 ## Hardware
 
@@ -235,10 +237,10 @@ More pictures coming
   re-hits the server; the display loops faster than this off the cache.
 - **Brightness / animation feel**: `BRIGHT_FULL` / `BRIGHT_DIM` (HT16K33 levels
   0–15) and the `stepMs` / hold values in `showFrame()` / `showArrivals()`.
-- **Plane bounding area**: `ADSB_LAT` / `ADSB_LON` / `ADSB_RADIUS_NM` in
-  `main.cpp` — a point and a radius in nautical miles (adsb.lol has no free
-  bbox endpoint, so the disc *is* the box). Defaults sit over Williamsburg on
-  the LGA approach.
+- **Plane area**: `ADSB_LAT` / `ADSB_LON` / `ADSB_RADIUS_NM` set the disc that's
+  fetched (adsb.lol has no free bbox query); `BBOX_LAT_MIN/MAX` and
+  `BBOX_LON_MIN/MAX` then clip the results to a lat/lon box — the default box is
+  Brooklyn, which keeps the LGA approach traffic and drops the Hudson corridor.
 - **Plane altitude band**: `ADSB_ALT_MIN` / `ADSB_ALT_MAX` (feet, default
   800–5000) and `ADSB_CATEGORY` (`A3` = airliner-sized).
 - **Plane refresh rate**: `ADSB_REFETCH_MS` (default 20000).
@@ -293,8 +295,8 @@ More pictures coming
   parsed whole (no filter). Empty overnight when nothing's tracked.
 - **Plane positions**: [`api.adsb.lol/v2/point/{lat}/{lon}/{radius_nm}`](https://api.adsb.lol/docs)
   — free, no key, but **requires a non-generic `User-Agent` with contact info**
-  (else `403`). Returns an `ac[]` array; we filter to `category == "A3"` in the
-  altitude band and take the highest `lat`.
+  (else `403`). Returns an `ac[]` array; we keep `category == "A3"` in the
+  altitude band and inside the Brooklyn box, then take the highest `lat`.
 - **Plane routes**: `POST api.adsb.lol/api/0/routeset` — the same lookup the
   adsb.lol web GUI uses. Body `{"planes":[{"callsign","lat","lng"}]}`; returns
   `_airports[]` + a `plausible` flag, and is position-aware so it resolves the
