@@ -343,14 +343,20 @@ void displayText(String text, int dpLocation = -1, int holdMs = 2000) {
 // old data out to the left while the new data scrolls in from the right.
 String g_frame = "        ";
 
+// Actual current backpack brightness, so fades start from where we really are
+// (e.g. the dim progress bar) instead of snapping to full first.
+uint8_t g_bright = BRIGHT_FULL;
+
 void setBrightnessBoth(uint8_t b) {
+  g_bright = b;
   alpha4_0.setBrightness(b);
   alpha4_1.setBrightness(b);
 }
 
-void fadeBrightnessBoth(int from, int to, int stepMs) {
-  int dir = (to >= from) ? 1 : -1;
-  for (int b = from; b != to; b += dir) {
+// Ramp from the current brightness to `to`, one level per stepMs.
+void fadeBrightnessBoth(int to, int stepMs) {
+  int dir = (to >= g_bright) ? 1 : -1;
+  for (int b = g_bright; b != to; b += dir) {
     setBrightnessBoth(b);
     delay(stepMs);
   }
@@ -364,7 +370,7 @@ void showFrame(String next, int holdMs, int stepMs = 45) {
   while (next.length() < 8) next += " ";
   next = next.substring(0, 8);
 
-  fadeBrightnessBoth(BRIGHT_FULL, BRIGHT_DIM, 8);
+  fadeBrightnessBoth(BRIGHT_DIM, 8);
 
   String buf = g_frame + next;  // 16 columns: old data | new data
   for (int i = 1; i <= 8; i++) {
@@ -373,7 +379,7 @@ void showFrame(String next, int holdMs, int stepMs = 45) {
   }
   g_frame = next;
 
-  fadeBrightnessBoth(BRIGHT_DIM, BRIGHT_FULL, 14);
+  fadeBrightnessBoth(BRIGHT_FULL, 14);
   delay(holdMs);
 }
 
