@@ -97,7 +97,9 @@ plane icon above) and puts it on the display.
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) (VS Code extension recommended, built on Linux)
+- [PlatformIO](https://platformio.org/) — either the VS Code extension or the
+  [Core CLI](https://docs.platformio.org/en/latest/core/installation/index.html)
+  (`pio`). Developed on Linux.
 - USB drivers for ESP32 (usually automatic on Linux)
 
 ### Installation
@@ -105,12 +107,31 @@ plane icon above) and puts it on the display.
 If you're the type to do this, you probably don't need instructions, but...
 
 1. Clone or download this project.
-2. Open in PlatformIO (or VS Code with PlatformIO extension).
-3. `cp include/secrets.h.example include/secrets.h` and paste in your keys
+2. `cp include/secrets.h.example include/secrets.h` and paste in your keys
    (see [Secrets](#secrets)). Optional — it builds fine without it.
-4. Connect your ESP32 board via USB.
-5. Build and upload the firmware:
-   - Click the "Upload" button in PlatformIO, or run `platformio run --target upload --environment freenove_esp32_s3_wroom`
+3. Connect the ESP32 board via USB (it enumerates as `/dev/ttyACM0` on Linux;
+   adjust `upload_port` / `monitor_port` in `platformio.ini` otherwise).
+4. Build and flash, either way:
+
+**VS Code / PlatformIO IDE** — open the folder, then the PlatformIO toolbar
+buttons: ✓ build, → upload. Environment `freenove_esp32_s3_wroom` is the default.
+
+**Command line** — with the [PlatformIO Core CLI](https://docs.platformio.org/en/latest/core/installation/index.html)
+(`pio`). The env name is `freenove_esp32_s3_wroom`:
+
+```sh
+pio run                                          # compile only
+pio run -t upload                                # compile + flash to the board
+pio run -t upload -t monitor                     # ...then open the serial monitor
+pio device list                                  # find the port if it isn't /dev/ttyACM0
+pio run -t clean                                 # wipe build artifacts
+```
+
+There's only one environment, so `-e freenove_esp32_s3_wroom` is optional; add it
+if you define more. If `pio` isn't on your `PATH`, PlatformIO's installer puts it
+at `~/.platformio/penv/bin/pio` (use that full path — a distro-packaged
+`/usr/bin/pio` may not work). Serial output over USB doesn't show on Linux for
+this board (see [Serial Monitor](#serial-monitor)).
 
 ### Secrets
 
