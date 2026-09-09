@@ -8,7 +8,8 @@ on dual 14-segment LED displays.
 And because the hardware started life as an LGA plane spotter: whenever there's an
 airliner low over Brooklyn on final into **LaGuardia**, it slips the northern-most
 one (the one closest to touchdown) in between subway passes — flight number,
-airline, origin airport, aircraft type.
+airline, origin airport, aircraft type. It also shows the current **NWS weather
+alert** for the neighborhood, if there is one.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
@@ -16,7 +17,8 @@ It's an ESP32-based device that pulls real-time arrival data from the MTA's
 GTFS-realtime feed (via the [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/)
 JSON proxy, so no protobuf parsing on the microcontroller) and cycles through
 the minutes-to-arrival for the next few trains each way, plus plane data from
-[adsb.lol](https://adsb.lol/) and route lookups from [adsbdb.com](https://www.adsbdb.com/).
+[adsb.lol](https://adsb.lol/) / [adsbdb.com](https://www.adsbdb.com/) and weather
+alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
  - version 3.0
@@ -36,6 +38,10 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and origin
   (`FROM MIA MIAMI`). Northern-most plane wins — it's the closest to LGA. No
   plane in the area → just the trains, same as before.
+- **Weather alert**: if the NWS has any active watch/warning/advisory for the
+  point, a `* WX *` frame then the event name (`Winter Weather Advisory`) — the
+  event only, no headline or instructions. Refreshed every 5 min; nothing shown
+  when it's clear.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
@@ -130,10 +136,12 @@ More pictures coming
    soonest-first, ~2s each as `1D  2min`, `2U  3min`, ... . Every frame fades
    down, scrolls the old data out while the new data scrolls in, then fades back
    up.
-4. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
-   follows the trains: callsign, airline, aircraft type, altitude, origin
-   airport. Otherwise it's trains only.
-5. If WiFi fails, it displays "No Wi-fi" and restarts.
+4. If the NWS has an active alert for the point, a `* WX *` frame + the event
+   name follows the trains.
+5. If there's an airliner low over Brooklyn on final into LGA, a `*PLANE*` block
+   follows that: callsign, airline, aircraft type, altitude, origin airport.
+   Otherwise it's trains only.
+6. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
 
@@ -162,6 +170,9 @@ More pictures coming
 - **Plane altitude band**: `ADSB_ALT_MIN` / `ADSB_ALT_MAX` (feet, default
   800–5000) and `ADSB_CATEGORY` (`A3` = airliner-sized).
 - **Plane refresh rate**: `ADSB_REFETCH_MS` (default 20000).
+- **Weather alert point**: `WX_URL` in `main.cpp` — an
+  `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
+  300000) is how often it's polled.
 - **User-Agent**: `USER_AGENT` in `main.cpp` — **must** carry real contact info.
   adsb.lol returns `403 "User-Agent too generic; include valid contact info."`
   for a blank or generic UA, which is what silently killed the original
@@ -204,6 +215,11 @@ More pictures coming
   old `/api/0/routeset`, which now returns an empty `201` for any request.
   `404 "unknown callsign"` just means no route on file; the plane still shows
   without an origin.
+- **Weather alerts**: [`api.weather.gov/alerts/active?point={lat},{lon}`](https://www.weather.gov/documentation/services-web-api)
+  — free, no key. Returns a GeoJSON `FeatureCollection`; we read
+  `features[0].properties.event` (via an ArduinoJson filter, since full alert
+  bodies are large) and show nothing when `features` is empty. Note this is
+  `/alerts/active`, not `/points/` — the latter is just grid metadata.
 
 ## License
 

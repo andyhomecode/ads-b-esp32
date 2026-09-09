@@ -76,6 +76,14 @@
 // /api/0/routeset endpoint, which now returns an empty 201 for everything.
 #define ROUTE_URL_BASE  "https://api.adsbdb.com/v0/callsign/"
 
+// --- NWS weather alerts ----------------------------------------------------
+// Active watches / warnings / advisories for our point. If the feed carries any
+// feature, we show its "event" string (e.g. "Winter Weather Advisory") and
+// nothing else. The alert list is at /alerts/active?point=, NOT /points/ (that
+// one is just grid metadata and has no alerts).
+#define WX_URL          "https://api.weather.gov/alerts/active?point=40.7168,-73.9861"
+#define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
+
 // instantiate the two i2c LED controllers
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 alpha4_0 = Adafruit_AlphaNum4();
@@ -582,6 +590,49 @@ void showPlane(const Plane &p) {
 }
 
 
+//                    _   _
+//  __      ____ __  | | | |
+//  \ \ /\ / /\ \/ / | |_| |
+//   \ V  V /  >  <  |  _  |
+//    \_/\_/  /_/\_\ |_| |_|
+//
+// Basic NWS emergency info: if there's an active alert for our point, its event
+// name gets a frame after the trains. Just the event -- no headline/instruction.
+
+String g_wxEvent;  // e.g. "Winter Weather Advisory"; "" when clear
+
+void fetchWeatherAlert() {
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);              // NWS asks for an identifying UA
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(WX_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("WX HTTP %d\n", code);
+    http.end();
+    return;  // keep the last known alert; don't drop a real one on a blip
+  }
+  String payload = http.getString();
+  http.end();
+
+  // Keep only features[*].properties.event -- full alert bodies are huge.
+  JsonDocument filter;
+  filter["features"][0]["properties"]["event"] = true;
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("WX JSON parse error");
+    return;
+  }
+
+  JsonArray feats = doc["features"];
+  g_wxEvent = (!feats.isNull() && feats.size() > 0)
+                ? String(feats[0]["properties"]["event"] | "")
+                : "";
+  Serial.printf("WX: %s\n", g_wxEvent.length() ? g_wxEvent.c_str() : "(clear)");
+}
+
+
 bool connectToWiFi(const char *ssid, const char *password) {
   WiFi.begin(ssid, password);
   Serial.printf("Connecting to WiFi: %s\n", ssid);
@@ -889,6 +940,22 @@ void loop() {
           nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
         }
         showArrivals(trains, trainCount, nowEpoch);
+      }
+
+      // --- NWS: refresh the weather alert on its own (slow) clock ----------
+      static unsigned long lastWxMs = 0;
+      static bool wxFirst = true;
+      if (wxFirst || millis() - lastWxMs >= WX_REFETCH_MS) {
+        wxFirst = false;
+        lastWxMs = millis();
+        fetchWeatherAlert();
+      }
+
+      // ...an active weather alert, if any -- just the event name.
+      if (g_wxEvent.length()) {
+        showFrame("* WX *", 400);
+        displayText(g_wxEvent);
+        g_frame = "        ";
       }
 
       // ...then, if there's a plane low over Brooklyn, its details.
