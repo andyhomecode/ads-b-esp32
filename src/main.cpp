@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.5 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.6 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // Point + radius (nm) == the "bounding area": a disc over Williamsburg on the
 // LGA approach path. adsb.lol has no free bbox endpoint; the disc is the box.
@@ -398,11 +398,42 @@ void blink(bool blinkOn) {
 
 //  progress bar ----------------------------------------------------------
 //  Fetches block loop(), so while a fetch cycle runs the display becomes a
-//  dim left-to-right bar: one column per HTTP call. '-' the moment a call
-//  starts, then when it returns: '*' got data, '0' call ok but nothing,
-//  'X' error. progReset() at the top of the fetch section each pass;
-//  progBegin()/progEnd() wrap each call.
+//  dim left-to-right bar: one column per HTTP call. '-' (with its decimal
+//  point lit = "working") the moment a call starts; when it returns the
+//  '-' morphs, segment by segment, into the result -- '*' got data (dash
+//  blooms into a star), '0' call ok but nothing (a ring closes around the
+//  dash, then the dash dissolves), 'X' error (the dash tips over into an
+//  X) -- and the decimal point goes dark. progReset() at the top of the
+//  fetch section each pass; progBegin()/progEnd() wrap each call.
 #define BRIGHT_MIN 0            // HT16K33 dimmest still-lit level
+
+// 14-seg building blocks (segment names per Adafruit_LEDBackpack.h).
+#define SEG_MID    (ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2)   // the dash
+#define SEG_VERT   (ALPHANUM_SEG_J  | ALPHANUM_SEG_M)    // center vertical |
+#define SEG_SLASH  (ALPHANUM_SEG_K  | ALPHANUM_SEG_L)    // /
+#define SEG_BSLASH (ALPHANUM_SEG_H  | ALPHANUM_SEG_N)    // backslash
+#define SEG_RING   (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | \
+                    ALPHANUM_SEG_D | ALPHANUM_SEG_E | ALPHANUM_SEG_F)
+
+// Morph frames, last one == the plain-ASCII glyph so the settle is seamless.
+static const uint16_t MORPH_STAR[] = {          // '-' -> '*'
+  SEG_MID,
+  SEG_MID | SEG_VERT,                           // "+"
+  SEG_MID | SEG_VERT | SEG_SLASH,
+  SEG_MID | SEG_VERT | SEG_SLASH | SEG_BSLASH,  // 0x3FC0 == '*'
+};
+static const uint16_t MORPH_X[] = {             // '-' -> 'X'
+  SEG_MID,
+  SEG_BSLASH,                                   // dash tipped to "\"
+  SEG_BSLASH | SEG_SLASH,                       // 0x2D00 == 'X'
+};
+static const uint16_t MORPH_ZERO[] = {          // '-' -> '0'
+  SEG_MID,
+  SEG_MID | ALPHANUM_SEG_A | ALPHANUM_SEG_D,    // dash + top & bottom rails
+  SEG_MID | SEG_RING,                           // ring closed around the dash
+  SEG_RING,                                     // dash dissolves
+  SEG_RING | SEG_SLASH,                         // 0x0C3F == '0'
+};
 
 static char g_prog[9] = "        ";
 static int  g_progN   = 0;      // next column
@@ -417,13 +448,32 @@ void progBegin() {
   if (g_progN >= 8) return;
   g_prog[g_progN] = '-';
   setBrightnessBoth(BRIGHT_MIN);
-  displayStringAcrossTwoDisplays(g_prog);
+  displayStringAcrossTwoDisplays(g_prog, g_progN);  // dp lit = "working"
 }
 
 void progEnd(char result) {          // '*' data | '0' none | 'X' error
   if (g_progN >= 8) return;
+
+  const uint16_t *frames = nullptr;
+  int n = 0;
+  switch (result) {
+    case '*': frames = MORPH_STAR; n = sizeof(MORPH_STAR) / sizeof(MORPH_STAR[0]); break;
+    case '0': frames = MORPH_ZERO; n = sizeof(MORPH_ZERO) / sizeof(MORPH_ZERO[0]); break;
+    case 'X': frames = MORPH_X;    n = sizeof(MORPH_X)    / sizeof(MORPH_X[0]);    break;
+  }
+
+  // Animate just the active column; the rest of the bar stays put.
+  Adafruit_AlphaNum4 &disp = (g_progN < 4) ? alpha4_0 : alpha4_1;
+  uint8_t pos = g_progN & 3;
+  for (int f = 0; f < n; f++) {
+    disp.writeDigitRaw(pos, frames[f]);
+    disp.writeDisplay();
+    delay(45);
+  }
+
+  // Settle: clean re-render with the real glyph, decimal point off.
   g_prog[g_progN] = result;
-  displayStringAcrossTwoDisplays(g_prog);
+  displayStringAcrossTwoDisplays(g_prog, -1);
   g_progN++;
 }
 
@@ -979,7 +1029,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.5");
+  displayText(" V 4.6");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);

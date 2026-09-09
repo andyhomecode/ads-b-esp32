@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.5
+ - version 4.6
  - Sep 9, 2026
 
 ## Features
@@ -60,9 +60,12 @@ alerts from [api.weather.gov](https://www.weather.gov/documentation/services-web
   between fetches. A failed or empty fetch just leaves that block's last data (or
   nothing) — the other blocks are unaffected.
 - **Fetch progress bar**: the HTTP calls block the loop, so while a fetch cycle
-  runs the display becomes a dim left-to-right bar — one column per call: `-`
-  when it starts, then `*` (got data) / `0` (call OK, nothing there) / `X`
-  (error). It scrolls away as the real frames come back.
+  runs the display becomes a dim left-to-right bar — one column per call. When a
+  call starts, a `-` with its **decimal point lit** ("working"); when it returns
+  the `-` morphs segment-by-segment into the result and the DP goes dark — `*`
+  got data (the dash blooms into a star), `0` call OK but nothing there (a ring
+  closes around the dash, then the dash dissolves), `X` error (the dash tips over
+  into an X). The finished bar scrolls away as the real frames come back.
 - **NTP time sync**: turns the feed's absolute arrival timestamps into a live
   countdown; falls back to the feed's own `updated` time if NTP doesn't sync.
 - **Dual 14-Segment LED Displays**: shows scrolling text and data.
