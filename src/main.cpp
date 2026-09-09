@@ -696,18 +696,16 @@ void fetchBuses() {
   String payload = http.getString();
   http.end();
 
-  // Filter down to just the fields we render.
-  JsonDocument filter;
-  JsonObject fj = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
-                        ["MonitoredStopVisit"][0]["MonitoredVehicleJourney"];
-  fj["PublishedLineName"] = true;
-  fj["MonitoredCall"]["ExpectedArrivalTime"] = true;
-  fj["MonitoredCall"]["AimedArrivalTime"] = true;
-  fj["MonitoredCall"]["NumberOfStopsAway"] = true;
+  Serial.printf("BUS payload %d bytes\n", payload.length());
 
+  // One stop's SIRI response is small (a few KB), so just parse the whole
+  // thing -- no filter. (An earlier filter build was silently empty, which is
+  // why no buses ever showed.) SIRI nests fairly deep, so lift the limit.
   JsonDocument doc;
-  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
-    Serial.println("BUS JSON parse error");
+  DeserializationError err =
+      deserializeJson(doc, payload, DeserializationOption::NestingLimit(20));
+  if (err) {
+    Serial.printf("BUS JSON parse error: %s\n", err.c_str());
     return;
   }
 
