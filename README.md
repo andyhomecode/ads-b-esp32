@@ -21,17 +21,18 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.9
+ - version 4.10
  - Sep 9, 2026
 
 ## Features
 
 - **Next-train countdown, both directions in one list**: a single `E B'WAY`
   station frame, then the next few F trains **either way, sorted soonest-first**.
-  Each frame is `nX YYmin` — `n` is the place in line, `X` is `U` (uptown) or
-  `D` (downtown / Brooklyn): `1D  2min`, `2U  3min`, `3D  6min`, ... (`nX  NOW`
-  when one's basically here, `NO F TRN` when nothing's running). Up to
-  `NUM_TRAINS` per direction go into the merge.
+  Each frame is `F<dir> YYmin` — `<dir>` is a custom 14-segment glyph right after
+  the `F`: a down arrowhead (`\|/`) in the top half for downtown (Brooklyn), an
+  up arrowhead (`/|\`) in the bottom half for uptown. So `Fv  2min`, `F^  3min`,
+  `Fv  6min`, ... (`F<dir>  NOW` when one's basically here, `NO F TRN` when
+  nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
 - **Plane on approach (takes over the display)**: when an `A3` (large / airliner)
   aircraft is between `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the
   over-Brooklyn box, the display shows **only** the `*PLANE*` block —
@@ -41,9 +42,11 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   the background, so the trains/buses are current the moment the sky clears.
 - **Buses**: one block per stop in the `BUS_FEEDS` table — by default the
   **M14A-SBS** at Grand St / Clinton St westbound → Abingdon Sq, and the **M9**
-  at Essex St / East Broadway westbound → Battery Park City. Each shows its own
-  header (`M14A BUS`, `M9 BUS`) then `1B  4min`, `2B 12min`, ... (the `B` matches
-  the trains' `U`/`D`). MTA BusTime SIRI; each stop carries other routes too, so
+  at Essex St / East Broadway westbound → Battery Park City. It runs through the
+  upcoming arrivals, each its own frame with the route tag and countdown:
+  `M14 4mn`, `M14 12mn`, ... / `M9 4min`, `M9 12min`, ... (`min` trimmed to `mn`
+  when the row would overflow the 8 columns; `M14 NOW` when one's basically
+  here). MTA BusTime SIRI; each stop carries other routes too, so
   only the feed's `linePrefix` is kept. Needs an API key (see [Secrets](#secrets));
   no key → the whole bus section is skipped, and a stop with nothing tracked
   (e.g. the M9 overnight) just doesn't draw.
@@ -214,9 +217,9 @@ More pictures coming
    airport — and nothing else until it passes.
 4. **Otherwise** it cycles:
    - `E B'WAY` (~1s), then the next few F trains either direction, soonest-first,
-     ~2s each as `1D  2min`, `2U  3min`, ... .
+     ~2s each as `Fv  2min`, `F^  3min`, ... (down/up arrowhead = downtown/uptown).
    - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
-     City), a header frame + their countdowns.
+     City), a run through their countdowns: `M14 12mn` / `M9 12min`.
    - If the NWS has an active alert for the point, the event name, blinking.
    - If USGS has an M≥4.3 / tsunami Tokyo quake in the last 24 h, one blinking
      line: `TOKYO EQ M4.7 74 KM E OF TOMIOKA, JAPAN`.

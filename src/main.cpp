@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.9 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.10 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
 // inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
@@ -125,15 +125,16 @@
 #define BUS_REFETCH_MS  30000
 
 // One row per stop. `linePrefix` keeps only matching routes at that stop
-// (stops carry more than one line); `label` is the <=8-char header frame.
+// (stops carry more than one line); `disp` is the short route tag shown on
+// every arrival frame ("M14 12mn" / "M9 12min").
 struct BusFeed {
   const char *stopRef;
   const char *linePrefix;
-  const char *label;
+  const char *disp;
 };
 const BusFeed BUS_FEEDS[] = {
-  { "401150", "M14A", "M14A BUS" },  // Grand St/Clinton St, W -> Abingdon Sq
-  { "404287", "M9",   "M9 BUS"   },  // Essex St/East Broadway, W -> Battery Pk City
+  { "401150", "M14A", "M14" },  // Grand St/Clinton St, W -> Abingdon Sq
+  { "404287", "M9",   "M9"  },  // Essex St/East Broadway, W -> Battery Pk City
 };
 #define NUM_BUS_FEEDS (sizeof(BUS_FEEDS) / sizeof(BUS_FEEDS[0]))
 
@@ -306,6 +307,17 @@ const char *htmlTemplate =
 //             |_|            |___/
 
 
+// Two custom 14-segment glyphs for the train direction, carried through the
+// string/scroll pipeline as sentinel bytes: wherever one lands in a frame,
+// displayStringAcrossTwoDisplays() renders it raw instead of as ASCII.
+//   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
+//   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
+#define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
+#define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
+#define GLYPH_DOWN_CH '\x01'
+#define GLYPH_UP_CH   '\x02'
+
+
 void displayStringAcrossTwoDisplays(String text, int dPLocation = -1) {
 
   // add spaces to the end so we don't get null
@@ -325,13 +337,19 @@ void displayStringAcrossTwoDisplays(String text, int dPLocation = -1) {
   // It's weird, but that's because there's no ASCII modifier meaning "number or letter with a decimal point"
   for (int i = 0; i <= 3; i++) {
     char c = text.charAt(i);
-    alpha4_0.writeDigitAscii(i, c, i == dPLocation);  // Write each character to the display, if it's the character with the decimal point, show it
+    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
+      alpha4_0.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
+    else
+      alpha4_0.writeDigitAscii(i, c, i == dPLocation);  // Write each character to the display, if it's the character with the decimal point, show it
   }
 
   // Write to Display 2
   for (int i = 0; i <= 3; i++) {
     char c = text.charAt(i + 4);                            // remember we're showing the next 4 digits
-    alpha4_1.writeDigitAscii(i, c, (i == dPLocation - 4));  // Write each character to the display, ditto for the decimal point
+    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
+      alpha4_1.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
+    else
+      alpha4_1.writeDigitAscii(i, c, (i == dPLocation - 4));  // Write each character to the display, ditto for the decimal point
   }
 
   // Update both displays
@@ -489,7 +507,7 @@ void progEnd(char result) {          // '*' data | '0' none | 'X' error
   for (int f = 0; f < n; f++) {
     disp.writeDigitRaw(pos, frames[f]);
     disp.writeDisplay();
-    delay(45);
+    delay(70);
   }
 
   // Settle: clean re-render with the real glyph, decimal point off.
@@ -559,9 +577,10 @@ struct Arrival {
 };
 
 // The whole train display pass: one "E B'WAY" station frame, then every cached
-// arrival (both directions, already sorted soonest-first) as "nX YYmin" (~2s) /
-// "nX  NOW" when it's basically here -- n is the place in line, X is the
-// direction. A single "NO F TRN" if nothing's running.
+// arrival (both directions, already sorted soonest-first) as "Fv YYmin" (~2s) /
+// "Fv  NOW" when it's basically here -- the glyph after the F is the direction
+// (down arrowhead "\|/" up top = downtown, up arrowhead "/|\" low = uptown).
+// A single "NO F TRN" if nothing's running.
 void showArrivals(const Arrival *trains, int count, long nowEpoch) {
   showFrame("E B'WAY", 500);
 
@@ -572,13 +591,14 @@ void showArrivals(const Arrival *trains, int count, long nowEpoch) {
 
   for (int i = 0; i < count; i++) {
     long mins = (trains[i].epoch - nowEpoch + 30) / 60;
+    char dirCh = (trains[i].dir == 'U') ? GLYPH_UP_CH : GLYPH_DOWN_CH;
 
     char frame[12];
     if (mins <= 0) {
-      snprintf(frame, sizeof(frame), "%d%c  NOW", i + 1, trains[i].dir);
+      snprintf(frame, sizeof(frame), "F%c  NOW", dirCh);
     } else {
       if (mins > 99) mins = 99;
-      snprintf(frame, sizeof(frame), "%d%c %2ldmin", i + 1, trains[i].dir, mins);
+      snprintf(frame, sizeof(frame), "F%c %2ldmin", dirCh, mins);
     }
     showFrame(frame, 1300);
   }
@@ -972,23 +992,26 @@ void fetchBuses() {
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) fetchOneBusFeed(fi);
 }
 
-// For each stop with buses: its label header ("M14A BUS" / "M9 BUS"), then each
-// arrival as "nB YYmin" / "nB  NOW" -- "B" tags it a bus, matching the trains'
-// "nU" / "nD". SIRI hands them back soonest-first already.
+// For each stop with buses, run through the upcoming arrivals, each one its own
+// frame carrying the route tag and the countdown: "M14 12mn" / "M9 12min" /
+// "M14 NOW". "min" is trimmed to "mn" when the whole thing would overflow the 8
+// columns (M14 + two-digit minutes). SIRI hands them back soonest-first already.
 void showBuses(long nowEpoch) {
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
 
-    showFrame(BUS_FEEDS[fi].label, 800);
+    const char *disp = BUS_FEEDS[fi].disp;
     for (int i = 0; i < g_busCount[fi]; i++) {
       long mins = (g_bus[fi][i].epoch - nowEpoch + 30) / 60;
 
-      char frame[12];
+      char frame[16];
       if (mins <= 0) {
-        snprintf(frame, sizeof(frame), "%dB  NOW", i + 1);
+        snprintf(frame, sizeof(frame), "%s NOW", disp);
       } else {
         if (mins > 99) mins = 99;
-        snprintf(frame, sizeof(frame), "%dB %2ldmin", i + 1, mins);
+        snprintf(frame, sizeof(frame), "%s %ldmin", disp, mins);
+        if (strlen(frame) > 8)  // "M14 12min" -> "M14 12mn"
+          snprintf(frame, sizeof(frame), "%s %ldmn", disp, mins);
       }
       showFrame(frame, 1300);
     }
@@ -1137,7 +1160,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.9");
+  displayText(" V 4.10");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
