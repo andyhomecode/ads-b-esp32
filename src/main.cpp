@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.8 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.9 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
 // inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
@@ -106,6 +106,15 @@
 // one is just grid metadata and has no alerts).
 #define WX_URL          "https://api.weather.gov/alerts/active?point=40.7168,-73.9861"
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
+
+// --- USGS earthquakes near Tokyo ---------------------------------------------
+// The 5 most recent M>=4 within 300 km of Tokyo. We only *show* one if it's big
+// (mag > EQ_MIN_MAG) or tsunami-flagged, AND it happened in the last EQ_MAX_AGE_S
+// seconds -- needs an NTP clock for that window.
+#define EQ_URL          "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=35.68&longitude=139.77&maxradiuskm=300&minmagnitude=4&orderby=time&limit=5"
+#define EQ_MIN_MAG      5.0f
+#define EQ_MAX_AGE_S    86400         // 24 h
+#define EQ_REFETCH_MS   600000        // 10 min
 
 // --- MTA BusTime (SIRI stop-monitoring) ----------------------------------
 // Upcoming buses at one or more stops. Needs BUSTIME_API_KEY from
@@ -813,6 +822,77 @@ void fetchWeatherAlert() {
 }
 
 
+//                      _
+//   __ _ _   _  __ _  | | _____
+//  / _` | | | |/ _` | | |/ / _ \
+// | (_| | |_| | (_| | |   <  __/
+//  \__, |\__,_|\__,_| |_|\_\___|
+//     |_|
+//
+// A big earthquake near Tokyo. USGS gives the recent M4+ list; we surface one
+// only if it's mag > EQ_MIN_MAG or tsunami-flagged, and only if it landed in the
+// last EQ_MAX_AGE_S seconds.
+
+struct Quake {
+  bool   show = false;
+  float  mag  = 0;
+  bool   tsunami = false;
+  String place;                       // "219 KM SSE OF WADA, JAPAN"
+};
+
+Quake g_quake;
+
+void fetchQuake() {
+  long now = (long)time(nullptr);
+  if (now < 1700000000L) return;      // no clock yet -> can't judge the 24h window
+
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(EQ_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("EQ HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("EQ JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  g_quake.show = false;
+  for (JsonObject f : doc["features"].as<JsonArray>()) {   // newest first
+    JsonObject pr = f["properties"];
+    float     mag = pr["mag"] | 0.0f;
+    bool      tsu = (pr["tsunami"] | 0) != 0;
+    long long tms = pr["time"] | 0LL;                       // epoch milliseconds
+    long      age = now - (long)(tms / 1000);
+
+    if (age < 0 || age > EQ_MAX_AGE_S) continue;            // too old / clock skew
+    if (mag <= EQ_MIN_MAG && !tsu) continue;                // not a jolt, no tsunami
+
+    g_quake.show    = true;
+    g_quake.mag     = mag;
+    g_quake.tsunami = tsu;
+    g_quake.place   = String(pr["place"] | "");
+    g_quake.place.toUpperCase();
+    break;
+  }
+  Serial.printf("EQ: %s\n", g_quake.show ? g_quake.place.c_str() : "(none)");
+  progEnd(g_quake.show ? '*' : '0');
+}
+
+
 //  _               _
 // | |__  _   _ ___| |_ ___
 // | '_ \| | | / __| __/ _ \
@@ -1063,7 +1143,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.8");
+  displayText(" V 4.9");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -1245,6 +1325,15 @@ void loop() {
         fetchWeatherAlert();
       }
 
+      // --- USGS: check for a big Tokyo quake -----------------------------
+      static unsigned long lastEqMs = 0;
+      static bool eqFirst = true;
+      if (eqFirst || millis() - lastEqMs >= EQ_REFETCH_MS) {
+        eqFirst = false;
+        lastEqMs = millis();
+        fetchQuake();
+      }
+
       // If we hit the network this pass, hold the finished bar a beat, then let
       // the first real frame scroll it away.
       if (progRan()) {
@@ -1277,6 +1366,19 @@ void loop() {
           setBrightnessBoth(BRIGHT_FULL);  // no showFrame here to ramp us up
           blink(true);
           displayText(g_wxEvent);
+          blink(false);
+          g_frame = "        ";
+        }
+
+        // ...a big Tokyo earthquake in the last 24h, blinking.
+        if (g_quake.show) {
+          setBrightnessBoth(BRIGHT_FULL);
+          blink(true);
+          displayText(g_quake.tsunami ? "TSUNAMI!" : "TOKYO EQ");
+          char m[12];
+          snprintf(m, sizeof(m), "M %.1f", g_quake.mag);
+          displayText(m);
+          if (g_quake.place.length()) displayText(g_quake.place);
           blink(false);
           g_frame = "        ";
         }

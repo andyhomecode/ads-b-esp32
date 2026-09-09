@@ -9,7 +9,7 @@ And because the hardware started life as an LGA plane spotter: whenever there's 
 airliner low over Brooklyn on final into **LaGuardia**, the plane takes over the
 whole display — flight number, airline, origin airport, aircraft type — until it
 passes. It also shows nearby **bus** countdowns and the current **NWS weather
-alert** for the neighborhood, if there is one.
+alert** for the neighborhood — plus, because the author has people in Tokyo, a big-earthquake / tsunami check for Tokyo.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
@@ -21,7 +21,7 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 4.8
+ - version 4.9
  - Sep 9, 2026
 
 ## Features
@@ -51,6 +51,10 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   point, the event name (`Winter Weather Advisory`) scrolls across with the
   display **blinking** to catch the eye — the event only, no headline or
   instructions. Refreshed every 5 min; nothing shown when it's clear.
+- **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
+  Tokyo in the last 24 h that's **magnitude > 5** *or* tsunami-flagged, it blinks
+  `TOKYO EQ` (or `TSUNAMI!`), then `M 5.8`, then the place. Checked every 10 min;
+  needs the NTP clock for the 24 h window. Nothing shown otherwise.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
@@ -213,6 +217,8 @@ More pictures coming
    - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
      City), a header frame + their countdowns.
    - If the NWS has an active alert for the point, the event name, blinking.
+   - If USGS has a big/tsunami Tokyo quake in the last 24 h, `TOKYO EQ` /
+     `TSUNAMI!` + magnitude + place, blinking.
    Every frame fades down, scrolls the old data out while the new scrolls in,
    then fades back up.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
@@ -253,6 +259,10 @@ More pictures coming
 - **Weather alert point**: `WX_URL` in `main.cpp` — an
   `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
   300000) is how often it's polled.
+- **Earthquake watch**: `EQ_URL` (the `latitude`/`longitude`/`maxradiuskm` in it
+  aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (5.0), `EQ_MAX_AGE_S` (86400 =
+  24 h), `EQ_REFETCH_MS` (600000). Shows a quake only if `mag > EQ_MIN_MAG` **or**
+  it's tsunami-flagged, and only within the age window.
 - **User-Agent**: `USER_AGENT` in `main.cpp` — **must** carry real contact info.
   adsb.lol returns `403 "User-Agent too generic; include valid contact info."`
   for a blank or generic UA, which is what silently killed the original
@@ -311,6 +321,12 @@ More pictures coming
   `features[0].properties.event` (via an ArduinoJson filter, since full alert
   bodies are large) and show nothing when `features` is empty. Note this is
   `/alerts/active`, not `/points/` — the latter is just grid metadata.
+- **Earthquakes**: [`earthquake.usgs.gov/fdsnws/event/1/query`](https://earthquake.usgs.gov/fdsnws/event/1/)
+  `?format=geojson&latitude=&longitude=&maxradiuskm=&minmagnitude=4&orderby=time&limit=5`
+  — free, no key, ~4 KB. `features[].properties`: `mag`, `place` (English),
+  `time` (epoch **ms**), `tsunami` (0/1). We scan the 5 for the newest that's
+  `mag > EQ_MIN_MAG` or `tsunami` and under `EQ_MAX_AGE_S` old. Empty
+  `features[]` = all clear.
 
 ## License
 
@@ -326,5 +342,6 @@ Feel free to submit issues or pull requests for improvements!
 - Bus arrivals via [MTA BusTime](https://bustime.mta.info/) (SIRI).
 - Plane positions and routes via [adsb.lol](https://adsb.lol/); airline names from a small built-in table.
 - Weather alerts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
+- Earthquakes via the [USGS FDSN event API](https://earthquake.usgs.gov/fdsnws/event/1/).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.
