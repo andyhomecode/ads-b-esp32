@@ -70,7 +70,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/4.10 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/4.11 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
 // inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
@@ -761,8 +761,39 @@ void lookupRoute(Plane &p) {
   progEnd(pc);
 }
 
-// One plane pass. showFrame fades us in from the countdown; the details scroll
-// via displayText (it handles strings longer than the 8 columns).
+// Like showFrame(), but for plane details that can run longer than 8 columns
+// (airline names, "FROM ..." origins): fade down, slide the first 8 columns
+// in, fade back up and hold -- then, if there's more text, keep marqueeing it
+// across at full brightness before the next field fades down in turn.
+void showPlaneFrame(String text, int holdMs = 2000, int stepMs = 45) {
+  String first = text.substring(0, 8);
+  while (first.length() < 8) first += " ";
+
+  fadeBrightnessBoth(BRIGHT_DIM, 8);
+
+  String buf = g_frame + first;
+  for (int i = 1; i <= 8; i++) {
+    displayStringAcrossTwoDisplays(buf.substring(i, i + 8), -1);
+    delay(stepMs);
+  }
+  g_frame = first;
+
+  fadeBrightnessBoth(BRIGHT_FULL, 14);
+  delay(holdMs);
+
+  if (text.length() > 8) {
+    for (int i = 1; i <= text.length() - 8; i++) {
+      String frame = text.substring(i, i + 8);
+      displayStringAcrossTwoDisplays(frame, -1);
+      delay(200);
+    }
+    g_frame = text.substring(text.length() - 8);
+    delay(1000);
+  }
+}
+
+// One plane pass. Every field fades/slides in and out just like the train
+// and bus frames, instead of snapping straight to the new text.
 void showPlane(const Plane &p) {
   showFrame("*PLANE*", 400);
 
@@ -772,28 +803,26 @@ void showPlane(const Plane &p) {
       isAlpha(flight[0]) && isAlpha(flight[1]) && isAlpha(flight[2])) {
     flight = flight.substring(0, 3) + " " + flight.substring(3);
   }
-  displayText(flight, -1, 3000);
+  showPlaneFrame(flight, 3000);
 
-  displayText(p.airline.length() ? p.airline : "Unknown");
+  showPlaneFrame(p.airline.length() ? p.airline : "Unknown");
 
   if (icacoLookup.count(p.typeCode))
-    displayText(icacoLookup[p.typeCode]);
+    showPlaneFrame(icacoLookup[p.typeCode]);
   else if (p.typeCode.length())
-    displayText(p.typeCode);
+    showPlaneFrame(p.typeCode);
 
   if (p.altFt > 0) {
     char alt[16];
     snprintf(alt, sizeof(alt), "%ld FT", p.altFt);
-    displayText(alt);
+    showPlaneFrame(alt);
   }
 
   if (p.origin.length())
-    displayText("FROM " + p.origin);
+    showPlaneFrame("FROM " + p.origin);
 
   // show the flight one last time before fading out, so the user can read it
-  displayText(flight, -1, 3000);
-
-  g_frame = "        ";  // displayText() bypasses the scroll state showFrame tracks
+  showPlaneFrame(flight, 3000);
 }
 
 
@@ -1163,7 +1192,7 @@ void setup() {
   displayText("github.com/andyhomecode/ads-b-esp32");
   displayText("FTRAIN +");
   displayText("PLANES");
-  displayText(" V 4.10");
+  displayText(" V 4.11");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
