@@ -21,6 +21,13 @@
 // use the COM port, not USB
 //
 // built on PlatformIO on linux
+//
+// File layout (top to bottom): Config -> Hardware & globals -> Display / LED
+// rendering -> Time parsing -> Trains -> Lookups -> Planes -> Buses ->
+// Weather -> Quake -> WiFi & config portal -> Setup & loop. Each feed section
+// carries a fetchX() (pulls data into a cache) and a showX() (renders the
+// cache); the Display section is the only place that touches the LED
+// hardware directly.
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -48,6 +55,13 @@
   #define BUSTIME_API_KEY ""
 #endif
 
+//  ____             __ _
+// / ___|___  _ __  / _(_) __ _
+//| |   / _ \| '_ \| |_| |/ _` |
+//| |__| (_) | | | |  _| | (_| |
+// \____\___/|_| |_|_| |_|\__, |
+//                        |___/
+
 #define SWITCH_PIN 13  // GPIO pin for mode switch
 
 #define SDA 9
@@ -61,9 +75,6 @@
 #define STOP_ID        "F16"
 #define NUM_TRAINS     3      // how many upcoming trains to show, per direction
 #define REFETCH_MS     30000  // re-hit the server about this often; the display loops faster
-
-#define BRIGHT_FULL    15     // HT16K33 brightness, parked frame
-#define BRIGHT_DIM     1      // HT16K33 brightness while a frame scrolls in
 
 // --- ADS-B: airliners on final into LGA, low over Brooklyn -------------------
 // adsb.lol's free API. It now 403s any request with a blank or generic
@@ -138,6 +149,13 @@ const BusFeed BUS_FEEDS[] = {
 };
 #define NUM_BUS_FEEDS (sizeof(BUS_FEEDS) / sizeof(BUS_FEEDS[0]))
 
+
+// _   _                _                          ____ _       _           _
+//| | | | __ _ _ __ __| |_      ____ _ _ __ ___   / ___| | ___ | |__   __ _| |___
+//| |_| |/ _` | '__/ _` \ \ /\ / / _` | '__/ _ \ | |  _| |/ _ \| '_ \ / _` | / __|
+//|  _  | (_| | | | (_| |\ V  V / (_| | | |  __/ | |_| | | (_) | |_) | (_| | \__ \
+//|_| |_|\__,_|_|  \__,_| \_/\_/ \__,_|_|  \___|  \____|_|\___/|_.__/ \__,_|_|___/
+
 // instantiate the two i2c LED controllers
 Adafruit_AlphaNum4 alpha4_1 = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 alpha4_0 = Adafruit_AlphaNum4();
@@ -160,10 +178,423 @@ const unsigned long WIFI_TIMEOUT_MS = 20000;
 // store settings between sessions
 Preferences preferences;
 
+bool g_wifiConnected = false;  // global variable to show WiFi state
 
-bool isConnected = false;  // global variable to show WiFi state
+
+//      _ _           _
+//   __| (_)___ _ __ | | __ _ _   _
+//  / _` | / __| '_ \| |/ _` | | | |
+// | (_| | \__ \ |_) | | (_| | |_| |
+//  \__,_|_|___/ .__/|_|\__,_|\__, |
+//             |_|            |___/
+//
+// Everything that touches the LED hardware directly. Two verbs: write* does
+// one immediate raw write (no delay); show* holds, fades, slides, scrolls or
+// blinks before returning -- that's the API feed code below should call.
+
+// Backpack brightness levels (HT16K33 supports 0-15).
+#define BRIGHT_FULL 15   // parked frame
+#define BRIGHT_DIM   1   // while a frame fades/scrolls in
+#define BRIGHT_MIN   0   // dimmest still-lit level -- the progress bar
+
+// Two custom 14-segment glyphs for the train direction, carried through the
+// string/scroll pipeline as sentinel bytes: wherever one lands in a frame,
+// writeRawFrame() renders it raw instead of as ASCII.
+//   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
+//   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
+#define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
+#define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
+#define GLYPH_DOWN_CH '\x01'
+#define GLYPH_UP_CH   '\x02'
 
 
+void writeRawFrame(String text, int dPLocation = -1) {
+
+  // add spaces to the end so we don't get null
+  // yes, I know this is a terrible hack, and it shouldn't happen,
+  text += "        ";
+
+  // Clear both displays
+  alpha4_0.clear();
+  alpha4_1.clear();
+
+
+  // Write to Display 1
+  // you can only set one character at one position at a time
+  // and there's 4 characters per display
+  // so go through the first 4 characters of the text, put them in the spots
+  // and if you're on the character where the decimal point is, turn on the bool
+  // It's weird, but that's because there's no ASCII modifier meaning "number or letter with a decimal point"
+  for (int i = 0; i <= 3; i++) {
+    char c = text.charAt(i);
+    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
+      alpha4_0.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
+    else
+      alpha4_0.writeDigitAscii(i, c, i == dPLocation);  // Write each character to the display, if it's the character with the decimal point, show it
+  }
+
+  // Write to Display 2
+  for (int i = 0; i <= 3; i++) {
+    char c = text.charAt(i + 4);                            // remember we're showing the next 4 digits
+    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
+      alpha4_1.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
+    else
+      alpha4_1.writeDigitAscii(i, c, (i == dPLocation - 4));  // Write each character to the display, ditto for the decimal point
+  }
+
+  // Update both displays
+  alpha4_0.writeDisplay();
+  alpha4_1.writeDisplay();
+}
+
+
+// What's currently parked on the 8 columns, so the next frame can scroll the
+// old data out to the left while the new data scrolls in from the right.
+String g_frame = "        ";
+
+// Actual current backpack brightness, so fades start from where we really are
+// (e.g. the dim progress bar) instead of snapping to full first.
+uint8_t g_bright = BRIGHT_FULL;
+
+void setBrightnessBoth(uint8_t b) {
+  g_bright = b;
+  alpha4_0.setBrightness(b);
+  alpha4_1.setBrightness(b);
+}
+
+// Ramp from the current brightness to `to`, one level per stepMs.
+void fadeBrightnessBoth(int to, int stepMs) {
+  int dir = (to >= g_bright) ? 1 : -1;
+  for (int b = g_bright; b != to; b += dir) {
+    setBrightnessBoth(b);
+    delay(stepMs);
+  }
+  setBrightnessBoth(to);
+}
+
+// Fade down to dim, scroll the current frame out to the left while `next` slides
+// in from the right (all at low brightness), then fade back up to full and hold
+// for holdMs.
+void showFrame(String next, int holdMs, int stepMs = 45) {
+  while (next.length() < 8) next += " ";
+  next = next.substring(0, 8);
+
+  fadeBrightnessBoth(BRIGHT_DIM, 8);
+
+  String buf = g_frame + next;  // 16 columns: old data | new data
+  for (int i = 1; i <= 8; i++) {
+    writeRawFrame(buf.substring(i, i + 8), -1);
+    delay(stepMs);
+  }
+  g_frame = next;
+
+  fadeBrightnessBoth(BRIGHT_FULL, 14);
+  delay(holdMs);
+}
+
+
+void showText(String text, int dpLocation = -1, int holdMs = 2000) {
+  if (text.length() <= 8) {
+    writeRawFrame(text, dpLocation);
+    delay(holdMs);
+  } else {
+    // Show first 8 characters
+    writeRawFrame(text.substring(0, 8), dpLocation);
+    delay(holdMs);
+
+    // Scroll until the last character is in the right-most position
+    for (int i = 1; i <= text.length() - 8; i++) {
+      String frame = text.substring(i, i + 8);
+      writeRawFrame(frame, -1);  // No decimal point during scroll
+      delay(200);  // Delay between scroll frames
+    }
+    delay(1000);  // Pause for 1 second at the end
+  }
+}
+
+
+void blink(bool blinkOn) {
+
+  if (blinkOn) {
+    alpha4_0.blinkRate(HT16K33_BLINK_2HZ);
+    alpha4_1.blinkRate(HT16K33_BLINK_2HZ);
+  } else {
+    alpha4_0.blinkRate(HT16K33_BLINK_OFF);
+    alpha4_1.blinkRate(HT16K33_BLINK_OFF);
+  }
+}
+
+
+//  progress bar ----------------------------------------------------------
+//  Fetches block loop(), so while a fetch cycle runs the display becomes a
+//  dim left-to-right bar: one column per HTTP call. '-' (with its decimal
+//  point lit = "working") the moment a call starts; when it returns the
+//  '-' morphs, segment by segment, into the result -- '*' got data (dash
+//  blooms into a star), '0' call ok but nothing (a ring closes around the
+//  dash, then the dash dissolves), 'X' error (the dash tips over into an
+//  X) -- and the decimal point goes dark. progReset() at the top of the
+//  fetch section each pass; progBegin()/progEnd() wrap each call.
+
+// 14-seg building blocks (segment names per Adafruit_LEDBackpack.h).
+#define SEG_MID    (ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2)   // the dash
+#define SEG_VERT   (ALPHANUM_SEG_J  | ALPHANUM_SEG_M)    // center vertical |
+#define SEG_SLASH  (ALPHANUM_SEG_K  | ALPHANUM_SEG_L)    // /
+#define SEG_BSLASH (ALPHANUM_SEG_H  | ALPHANUM_SEG_N)    // backslash
+#define SEG_RING   (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | \
+                    ALPHANUM_SEG_D | ALPHANUM_SEG_E | ALPHANUM_SEG_F)
+
+// Morph frames, last one == the plain-ASCII glyph so the settle is seamless.
+static const uint16_t MORPH_STAR[] = {          // '-' -> '*'
+  SEG_MID,
+  SEG_MID | SEG_VERT,                           // "+"
+  SEG_MID | SEG_VERT | SEG_SLASH,
+  SEG_MID | SEG_VERT | SEG_SLASH | SEG_BSLASH,  // 0x3FC0 == '*'
+};
+static const uint16_t MORPH_X[] = {             // '-' -> 'X'
+  SEG_MID,
+  SEG_BSLASH,                                   // dash tipped to "\"
+  SEG_BSLASH | SEG_SLASH,                       // 0x2D00 == 'X'
+};
+static const uint16_t MORPH_ZERO[] = {          // '-' -> '0'
+  SEG_MID,
+  SEG_MID | ALPHANUM_SEG_A | ALPHANUM_SEG_D,    // dash + top & bottom rails
+  SEG_MID | SEG_RING,                           // ring closed around the dash
+  SEG_RING | SEG_SLASH,                         // dash gone -> 0x0C3F == '0'
+};
+
+static char g_prog[9] = "        ";
+static int  g_progN   = 0;      // next column
+
+void progReset() {
+  memset(g_prog, ' ', 8);
+  g_prog[8] = '\0';
+  g_progN = 0;
+}
+
+void progBegin() {
+  if (g_progN >= 8) return;
+  g_prog[g_progN] = '-';
+  setBrightnessBoth(BRIGHT_MIN);
+  writeRawFrame(g_prog, g_progN);  // dp lit = "working"
+}
+
+void progEnd(char result) {          // '*' data | '0' none | 'X' error
+  if (g_progN >= 8) return;
+
+  const uint16_t *frames = nullptr;
+  int n = 0;
+  switch (result) {
+    case '*': frames = MORPH_STAR; n = sizeof(MORPH_STAR) / sizeof(MORPH_STAR[0]); break;
+    case '0': frames = MORPH_ZERO; n = sizeof(MORPH_ZERO) / sizeof(MORPH_ZERO[0]); break;
+    case 'X': frames = MORPH_X;    n = sizeof(MORPH_X)    / sizeof(MORPH_X[0]);    break;
+  }
+
+  // Animate just the active column; the rest of the bar stays put.
+  Adafruit_AlphaNum4 &disp = (g_progN < 4) ? alpha4_0 : alpha4_1;
+  uint8_t pos = g_progN & 3;
+  for (int f = 0; f < n; f++) {
+    disp.writeDigitRaw(pos, frames[f]);
+    disp.writeDisplay();
+    delay(70);
+  }
+
+  // Settle: clean re-render with the real glyph, decimal point off.
+  g_prog[g_progN] = result;
+  writeRawFrame(g_prog, -1);
+  g_progN++;
+}
+
+bool progRan() { return g_progN > 0; }  // did this pass hit the network?
+
+
+//  _   _
+// | |_(_)_ __ ___   ___
+// | __| | '_ ` _ \ / _ \
+// | |_| | | | | | |  __/
+//  \__|_|_| |_| |_|\___|
+//
+// The feed hands us absolute timestamps like "2026-09-07T14:30:47-04:00",
+// so we need to know "now" to turn them into a countdown.
+
+// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+// algorithm). Avoids timegm(), which isn't declared in this newlib config.
+static long daysFromCivil(int y, int m, int d) {
+  y -= m <= 2;
+  long era = (y >= 0 ? y : y - 399) / 400;
+  int yoe = (int)(y - era * 400);
+  int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + doe - 719468L;
+}
+
+// Parse an ISO-8601 timestamp into a UTC epoch. Handles a trailing "Z", a
+// numeric "+HH:MM" / "-HH:MM" offset, and optional fractional seconds
+// ("...:09.967-04:00" -- BusTime sends these; the MTA/NWS feeds don't).
+// Returns 0 if it can't be parsed.
+long isoToEpoch(const char *iso) {
+  if (iso == nullptr || iso[0] == '\0') return 0;
+
+  int Y, Mo, D, h, m, s;
+  if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &Y, &Mo, &D, &h, &m, &s) < 6) return 0;
+
+  long utc = daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L + s;
+
+  // Find the zone designator: scan past the time (and any ".fff") to the first
+  // 'Z' / '+' / '-' after the 'T'.
+  const char *t = strchr(iso, 'T');
+  if (t) {
+    const char *z = t + 1;
+    while (*z && *z != 'Z' && *z != '+' && *z != '-') z++;
+    if (*z == '+' || *z == '-') {
+      int tzh = 0, tzm = 0;
+      if (sscanf(z + 1, "%d:%d", &tzh, &tzm) >= 1) {
+        long offset = (long)tzh * 3600 + (long)tzm * 60;
+        utc += (*z == '-') ? offset : -offset;  // "14:30-04:00" is 18:30 UTC
+      }
+    }
+  }
+  return utc;
+}
+
+
+//  _____             _
+// |_   _| __ __ _ ___(_)_ __  ___
+//   | || '__/ _` |_  / | '_ \/ __|
+//   | || | | (_| |/ /| | | | \__ \
+//   |_||_|  \__,_/___|_|_| |_|___/
+//
+// Countdown to the next F trains at East Broadway, both directions.
+
+// One cached F arrival: absolute epoch + which way it's headed ('U' uptown /
+// 'D' downtown). Both directions get merged into one soonest-first list.
+struct TrainArrival {
+  long epoch;
+  char dir;
+};
+
+// Up to NUM_TRAINS each way, merged and sorted soonest-first for display.
+TrainArrival g_trains[2 * NUM_TRAINS];
+int          g_trainCount     = 0;
+long         g_trainFetchEpoch  = 0;   // "now" at the moment of the last successful fetch
+unsigned long g_lastTrainFetchMs = 0;
+bool         g_haveTrainData  = false;
+
+// Hit the JSON proxy and refill g_trains/g_trainCount. Unlike the other
+// feeds' RefetchTimer-gated fetches, this keeps retrying every pass (not
+// just every REFETCH_MS) until the first parse succeeds -- same cadence as
+// the original inline loop() code, since a stale/empty countdown is worse
+// than an extra request.
+void fetchTrains() {
+  if (g_haveTrainData && millis() - g_lastTrainFetchMs < REFETCH_MS) return;
+
+  progBegin();
+  // Make HTTP GET to the MTA JSON proxy
+  HTTPClient http;
+  http.begin(String(API_URL_BASE) + STOP_ID);
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    Serial.println(payload);
+
+    // Parse JSON
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) {
+      Serial.print("JSON parse error: ");
+      Serial.println(error.c_str());
+      progEnd('X');
+      blink(true);
+    } else {
+      blink(false);
+
+      // "now" from NTP, or fall back to the feed's own update time
+      long nowEpoch = (long)time(nullptr);
+      if (nowEpoch < 1700000000L) {
+        nowEpoch = isoToEpoch(doc["updated"] | "");
+      }
+
+      // N == northbound (uptown), S == southbound (downtown / Brooklyn).
+      // Take up to NUM_TRAINS from each, tagged with direction; the feed
+      // occasionally lists a stray non-F route here, so keep F only.
+      g_trainCount = 0;
+      struct { const char *key; char dir; } dirs[] = {{"N", 'U'}, {"S", 'D'}};
+      for (auto &d : dirs) {
+        int added = 0;
+        for (JsonObject t : doc["data"][0][d.key].as<JsonArray>()) {
+          if (added >= NUM_TRAINS) break;
+          if (String(t["route"] | "") != "F") continue;
+          long e = isoToEpoch(t["time"] | "");
+          if (e > 0) {
+            g_trains[g_trainCount].epoch = e;
+            g_trains[g_trainCount].dir   = d.dir;
+            g_trainCount++;
+            added++;
+          }
+        }
+      }
+
+      // Sort soonest-first (tiny list, plain insertion sort).
+      for (int a = 1; a < g_trainCount; a++) {
+        TrainArrival cur = g_trains[a];
+        int b = a - 1;
+        while (b >= 0 && g_trains[b].epoch > cur.epoch) {
+          g_trains[b + 1] = g_trains[b];
+          b--;
+        }
+        g_trains[b + 1] = cur;
+      }
+
+      g_trainFetchEpoch  = nowEpoch;
+      g_lastTrainFetchMs = millis();
+      g_haveTrainData    = true;
+      progEnd(g_trainCount > 0 ? '*' : '0');
+    }
+  } else {
+    Serial.printf("HTTP error: %d\n", httpCode);
+    progEnd('X');
+    showText("HTTP " + String(httpCode));
+    blink(true);
+    ESP.restart();  // oh well
+  }
+  http.end();
+}
+
+// The whole train display pass: one "E B'WAY" station frame, then every cached
+// arrival (both directions, already sorted soonest-first) as "Fv YYmin" (~2s) /
+// "Fv  NOW" when it's basically here -- the glyph after the F is the direction
+// (down arrowhead "\|/" up top = downtown, up arrowhead "/|\" low = uptown).
+// A single "NO F TRN" if nothing's running.
+void showArrivals(long nowEpoch) {
+  showFrame("E B'WAY", 500);
+
+  if (g_trainCount == 0) {
+    showFrame("NO F TRN", 1400);
+    return;
+  }
+
+  for (int i = 0; i < g_trainCount; i++) {
+    long mins = (g_trains[i].epoch - nowEpoch + 30) / 60;
+    char dirCh = (g_trains[i].dir == 'U') ? GLYPH_UP_CH : GLYPH_DOWN_CH;
+
+    char frame[12];
+    if (mins <= 0) {
+      snprintf(frame, sizeof(frame), "F%c  NOW", dirCh);
+    } else {
+      if (mins > 99) mins = 99;
+      snprintf(frame, sizeof(frame), "F%c %2ldmin", dirCh, mins);
+    }
+    showFrame(frame, 1300);
+  }
+}
+
+
+// _                 _
+//| |    ___   ___  | | ___   _ _ __  ___
+//| |   / _ \ / _ \ | |/ / | | | '_ \/ __|
+//| |__| (_) | (_) | |   <| |_| | |_) \__ \
+//|_____\___/ \___/  |_|\_\\__,_| .__/|___/
+//                              |_|
+//
 // ICAO airline + aircraft-type codes -> friendly names. Offline and punchy;
 // covers what actually flies the LGA approach. Anything not here shows as
 // "Unknown" (the route API gives airports, not a friendly airline name).
@@ -274,334 +705,6 @@ void initLookups() {
   icacoLookup["GLF6"] = "Gulfstream G650";
   icacoLookup["MD88"] = "Mad Dog MD-88";
   icacoLookup["PC12"] = "Pilatus PC-12";
-}
-
-
-// HTML template for the configuration page
-const char *htmlTemplate =
-  "<!DOCTYPE html>\n"
-  "<html>\n"
-  "<head>\n"
-  "  <title>uptown-f-esp32 Config</title>\n"
-  "</head>\n"
-  "<body>\n"
-  "  <h1>Andy's uptown-f-esp32 WIFI Config</h1>\n"
-  "  <p><a href=\"https://github.com/andyhomecode/ads-b-esp32\">https://github.com/andyhomecode/ads-b-esp32</a></p>\n"
-  "  <h2>Configure WiFi</h2>\n"
-  "  <form action=\"/save\" method=\"post\">\n"
-  "    <label for=\"ssid\">SSID:</label><br>\n"
-  "    <input type=\"text\" id=\"ssid\" name=\"ssid\" value=\"%s\"><br><br>\n"
-  "    <label for=\"password\">Password:</label><br>\n"
-  "    <input type=\"password\" id=\"password\" name=\"password\" value=\"%s\"><br><br>\n"
-  "    <input type=\"submit\" value=\"Save\">\n"
-  "  </form>\n"
-  "</body>\n"
-  "</html>\n";
-
-
-//      _ _           _
-//   __| (_)___ _ __ | | __ _ _   _
-//  / _` | / __| '_ \| |/ _` | | | |
-// | (_| | \__ \ |_) | | (_| | |_| |
-//  \__,_|_|___/ .__/|_|\__,_|\__, |
-//             |_|            |___/
-
-
-// Two custom 14-segment glyphs for the train direction, carried through the
-// string/scroll pipeline as sentinel bytes: wherever one lands in a frame,
-// displayStringAcrossTwoDisplays() renders it raw instead of as ASCII.
-//   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
-//   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
-#define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
-#define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
-#define GLYPH_DOWN_CH '\x01'
-#define GLYPH_UP_CH   '\x02'
-
-
-void displayStringAcrossTwoDisplays(String text, int dPLocation = -1) {
-
-  // add spaces to the end so we don't get null
-  // yes, I know this is a terrible hack, and it shouldn't happen,
-  text += "        ";
-
-  // Clear both displays
-  alpha4_0.clear();
-  alpha4_1.clear();
-
-
-  // Write to Display 1
-  // you can only set one character at one position at a time
-  // and there's 4 characters per display
-  // so go through the first 4 characters of the text, put them in the spots
-  // and if you're on the character where the decimal point is, turn on the bool
-  // It's weird, but that's because there's no ASCII modifier meaning "number or letter with a decimal point"
-  for (int i = 0; i <= 3; i++) {
-    char c = text.charAt(i);
-    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
-      alpha4_0.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
-    else
-      alpha4_0.writeDigitAscii(i, c, i == dPLocation);  // Write each character to the display, if it's the character with the decimal point, show it
-  }
-
-  // Write to Display 2
-  for (int i = 0; i <= 3; i++) {
-    char c = text.charAt(i + 4);                            // remember we're showing the next 4 digits
-    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
-      alpha4_1.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
-    else
-      alpha4_1.writeDigitAscii(i, c, (i == dPLocation - 4));  // Write each character to the display, ditto for the decimal point
-  }
-
-  // Update both displays
-  alpha4_0.writeDisplay();
-  alpha4_1.writeDisplay();
-}
-
-
-
-void displayText(String text, int dpLocation = -1, int holdMs = 2000) {
-  if (text.length() <= 8) {
-    displayStringAcrossTwoDisplays(text, dpLocation);
-    delay(holdMs);
-  } else {
-    // Show first 8 characters
-    displayStringAcrossTwoDisplays(text.substring(0, 8), dpLocation);
-    delay(holdMs);
-
-    // Scroll until the last character is in the right-most position
-    for (int i = 1; i <= text.length() - 8; i++) {
-      String frame = text.substring(i, i + 8);
-      displayStringAcrossTwoDisplays(frame, -1);  // No decimal point during scroll
-      delay(200);  // Delay between scroll frames
-    }
-    delay(1000);  // Pause for 1 second at the end
-  }
-}
-
-
-// What's currently parked on the 8 columns, so the next frame can scroll the
-// old data out to the left while the new data scrolls in from the right.
-String g_frame = "        ";
-
-// Actual current backpack brightness, so fades start from where we really are
-// (e.g. the dim progress bar) instead of snapping to full first.
-uint8_t g_bright = BRIGHT_FULL;
-
-void setBrightnessBoth(uint8_t b) {
-  g_bright = b;
-  alpha4_0.setBrightness(b);
-  alpha4_1.setBrightness(b);
-}
-
-// Ramp from the current brightness to `to`, one level per stepMs.
-void fadeBrightnessBoth(int to, int stepMs) {
-  int dir = (to >= g_bright) ? 1 : -1;
-  for (int b = g_bright; b != to; b += dir) {
-    setBrightnessBoth(b);
-    delay(stepMs);
-  }
-  setBrightnessBoth(to);
-}
-
-// Fade down to dim, scroll the current frame out to the left while `next` slides
-// in from the right (all at low brightness), then fade back up to full and hold
-// for holdMs.
-void showFrame(String next, int holdMs, int stepMs = 45) {
-  while (next.length() < 8) next += " ";
-  next = next.substring(0, 8);
-
-  fadeBrightnessBoth(BRIGHT_DIM, 8);
-
-  String buf = g_frame + next;  // 16 columns: old data | new data
-  for (int i = 1; i <= 8; i++) {
-    displayStringAcrossTwoDisplays(buf.substring(i, i + 8), -1);
-    delay(stepMs);
-  }
-  g_frame = next;
-
-  fadeBrightnessBoth(BRIGHT_FULL, 14);
-  delay(holdMs);
-}
-
-
-void blink(bool blinkOn) {
-
-  if (blinkOn) {
-    alpha4_0.blinkRate(HT16K33_BLINK_2HZ);
-    alpha4_1.blinkRate(HT16K33_BLINK_2HZ);
-  } else {
-    alpha4_0.blinkRate(HT16K33_BLINK_OFF);
-    alpha4_1.blinkRate(HT16K33_BLINK_OFF);
-  }
-}
-
-
-//  progress bar ----------------------------------------------------------
-//  Fetches block loop(), so while a fetch cycle runs the display becomes a
-//  dim left-to-right bar: one column per HTTP call. '-' (with its decimal
-//  point lit = "working") the moment a call starts; when it returns the
-//  '-' morphs, segment by segment, into the result -- '*' got data (dash
-//  blooms into a star), '0' call ok but nothing (a ring closes around the
-//  dash, then the dash dissolves), 'X' error (the dash tips over into an
-//  X) -- and the decimal point goes dark. progReset() at the top of the
-//  fetch section each pass; progBegin()/progEnd() wrap each call.
-#define BRIGHT_MIN 0            // HT16K33 dimmest still-lit level
-
-// 14-seg building blocks (segment names per Adafruit_LEDBackpack.h).
-#define SEG_MID    (ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2)   // the dash
-#define SEG_VERT   (ALPHANUM_SEG_J  | ALPHANUM_SEG_M)    // center vertical |
-#define SEG_SLASH  (ALPHANUM_SEG_K  | ALPHANUM_SEG_L)    // /
-#define SEG_BSLASH (ALPHANUM_SEG_H  | ALPHANUM_SEG_N)    // backslash
-#define SEG_RING   (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | \
-                    ALPHANUM_SEG_D | ALPHANUM_SEG_E | ALPHANUM_SEG_F)
-
-// Morph frames, last one == the plain-ASCII glyph so the settle is seamless.
-static const uint16_t MORPH_STAR[] = {          // '-' -> '*'
-  SEG_MID,
-  SEG_MID | SEG_VERT,                           // "+"
-  SEG_MID | SEG_VERT | SEG_SLASH,
-  SEG_MID | SEG_VERT | SEG_SLASH | SEG_BSLASH,  // 0x3FC0 == '*'
-};
-static const uint16_t MORPH_X[] = {             // '-' -> 'X'
-  SEG_MID,
-  SEG_BSLASH,                                   // dash tipped to "\"
-  SEG_BSLASH | SEG_SLASH,                       // 0x2D00 == 'X'
-};
-static const uint16_t MORPH_ZERO[] = {          // '-' -> '0'
-  SEG_MID,
-  SEG_MID | ALPHANUM_SEG_A | ALPHANUM_SEG_D,    // dash + top & bottom rails
-  SEG_MID | SEG_RING,                           // ring closed around the dash
-  SEG_RING | SEG_SLASH,                         // dash gone -> 0x0C3F == '0'
-};
-
-static char g_prog[9] = "        ";
-static int  g_progN   = 0;      // next column
-
-void progReset() {
-  memset(g_prog, ' ', 8);
-  g_prog[8] = '\0';
-  g_progN = 0;
-}
-
-void progBegin() {
-  if (g_progN >= 8) return;
-  g_prog[g_progN] = '-';
-  setBrightnessBoth(BRIGHT_MIN);
-  displayStringAcrossTwoDisplays(g_prog, g_progN);  // dp lit = "working"
-}
-
-void progEnd(char result) {          // '*' data | '0' none | 'X' error
-  if (g_progN >= 8) return;
-
-  const uint16_t *frames = nullptr;
-  int n = 0;
-  switch (result) {
-    case '*': frames = MORPH_STAR; n = sizeof(MORPH_STAR) / sizeof(MORPH_STAR[0]); break;
-    case '0': frames = MORPH_ZERO; n = sizeof(MORPH_ZERO) / sizeof(MORPH_ZERO[0]); break;
-    case 'X': frames = MORPH_X;    n = sizeof(MORPH_X)    / sizeof(MORPH_X[0]);    break;
-  }
-
-  // Animate just the active column; the rest of the bar stays put.
-  Adafruit_AlphaNum4 &disp = (g_progN < 4) ? alpha4_0 : alpha4_1;
-  uint8_t pos = g_progN & 3;
-  for (int f = 0; f < n; f++) {
-    disp.writeDigitRaw(pos, frames[f]);
-    disp.writeDisplay();
-    delay(70);
-  }
-
-  // Settle: clean re-render with the real glyph, decimal point off.
-  g_prog[g_progN] = result;
-  displayStringAcrossTwoDisplays(g_prog, -1);
-  g_progN++;
-}
-
-bool progRan() { return g_progN > 0; }  // did this pass hit the network?
-
-
-//  _   _
-// | |_(_)_ __ ___   ___
-// | __| | '_ ` _ \ / _ \
-// | |_| | | | | | |  __/
-//  \__|_|_| |_| |_|\___|
-//
-// The feed hands us absolute timestamps like "2026-09-07T14:30:47-04:00",
-// so we need to know "now" to turn them into a countdown.
-
-// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
-// algorithm). Avoids timegm(), which isn't declared in this newlib config.
-static long daysFromCivil(int y, int m, int d) {
-  y -= m <= 2;
-  long era = (y >= 0 ? y : y - 399) / 400;
-  int yoe = (int)(y - era * 400);
-  int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097L + doe - 719468L;
-}
-
-// Parse an ISO-8601 timestamp into a UTC epoch. Handles a trailing "Z", a
-// numeric "+HH:MM" / "-HH:MM" offset, and optional fractional seconds
-// ("...:09.967-04:00" -- BusTime sends these; the MTA/NWS feeds don't).
-// Returns 0 if it can't be parsed.
-long isoToEpoch(const char *iso) {
-  if (iso == nullptr || iso[0] == '\0') return 0;
-
-  int Y, Mo, D, h, m, s;
-  if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &Y, &Mo, &D, &h, &m, &s) < 6) return 0;
-
-  long utc = daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L + s;
-
-  // Find the zone designator: scan past the time (and any ".fff") to the first
-  // 'Z' / '+' / '-' after the 'T'.
-  const char *t = strchr(iso, 'T');
-  if (t) {
-    const char *z = t + 1;
-    while (*z && *z != 'Z' && *z != '+' && *z != '-') z++;
-    if (*z == '+' || *z == '-') {
-      int tzh = 0, tzm = 0;
-      if (sscanf(z + 1, "%d:%d", &tzh, &tzm) >= 1) {
-        long offset = (long)tzh * 3600 + (long)tzm * 60;
-        utc += (*z == '-') ? offset : -offset;  // "14:30-04:00" is 18:30 UTC
-      }
-    }
-  }
-  return utc;
-}
-
-
-// One cached F arrival: absolute epoch + which way it's headed ('U' uptown /
-// 'D' downtown). Both directions get merged into one soonest-first list.
-struct Arrival {
-  long epoch;
-  char dir;
-};
-
-// The whole train display pass: one "E B'WAY" station frame, then every cached
-// arrival (both directions, already sorted soonest-first) as "Fv YYmin" (~2s) /
-// "Fv  NOW" when it's basically here -- the glyph after the F is the direction
-// (down arrowhead "\|/" up top = downtown, up arrowhead "/|\" low = uptown).
-// A single "NO F TRN" if nothing's running.
-void showArrivals(const Arrival *trains, int count, long nowEpoch) {
-  showFrame("E B'WAY", 500);
-
-  if (count == 0) {
-    showFrame("NO F TRN", 1400);
-    return;
-  }
-
-  for (int i = 0; i < count; i++) {
-    long mins = (trains[i].epoch - nowEpoch + 30) / 60;
-    char dirCh = (trains[i].dir == 'U') ? GLYPH_UP_CH : GLYPH_DOWN_CH;
-
-    char frame[12];
-    if (mins <= 0) {
-      snprintf(frame, sizeof(frame), "F%c  NOW", dirCh);
-    } else {
-      if (mins > 99) mins = 99;
-      snprintf(frame, sizeof(frame), "F%c %2ldmin", dirCh, mins);
-    }
-    showFrame(frame, 1300);
-  }
 }
 
 
@@ -773,7 +876,7 @@ void showPlaneFrame(String text, int holdMs = 2000, int stepMs = 45) {
 
   String buf = g_frame + first;
   for (int i = 1; i <= 8; i++) {
-    displayStringAcrossTwoDisplays(buf.substring(i, i + 8), -1);
+    writeRawFrame(buf.substring(i, i + 8), -1);
     delay(stepMs);
   }
   g_frame = first;
@@ -784,7 +887,7 @@ void showPlaneFrame(String text, int holdMs = 2000, int stepMs = 45) {
   if (text.length() > 8) {
     for (int i = 1; i <= text.length() - 8; i++) {
       String frame = text.substring(i, i + 8);
-      displayStringAcrossTwoDisplays(frame, -1);
+      writeRawFrame(frame, -1);
       delay(200);
     }
     g_frame = text.substring(text.length() - 8);
@@ -823,6 +926,116 @@ void showPlane(const Plane &p) {
 
   // show the flight one last time before fading out, so the user can read it
   showPlaneFrame(flight, 3000);
+}
+
+
+//  _               _
+// | |__  _   _ ___| |_ ___
+// | '_ \| | | / __| __/ _ \
+// | |_) | |_| \__ \ ||  __/
+// |_.__/ \__,_|___/\__\___|
+//
+// Upcoming buses at each stop in BUS_FEEDS (M14A -> Abingdon Sq, M9 -> Battery
+// Pk City). Each stop is one-directional so no direction filtering, but stops
+// carry more than one route, so keep only the feed's linePrefix.
+
+struct BusArrival {
+  long epoch;
+};
+
+BusArrival g_bus[NUM_BUS_FEEDS][BUS_MAX];
+int        g_busCount[NUM_BUS_FEEDS] = {0};
+
+// Fetch one stop and refill g_bus[fi] / g_busCount[fi]. On any HTTP/JSON
+// trouble it leaves the previous list in place.
+void fetchOneBusFeed(int fi) {
+  const BusFeed &feed = BUS_FEEDS[fi];
+
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(String(BUS_URL_BASE) + "?key=" + BUSTIME_API_KEY +
+             "&MonitoringRef=" + feed.stopRef);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("BUS %s HTTP %d\n", feed.linePrefix, code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  // One stop's SIRI response is small (a few KB), so just parse the whole
+  // thing -- no filter. (An earlier filter build was silently empty, which is
+  // why no buses ever showed.) SIRI nests fairly deep, so lift the limit.
+  JsonDocument doc;
+  DeserializationError err =
+      deserializeJson(doc, payload, DeserializationOption::NestingLimit(20));
+  if (err) {
+    Serial.printf("BUS %s parse error: %s\n", feed.linePrefix, err.c_str());
+    progEnd('X');
+    return;
+  }
+
+  JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
+                        ["MonitoredStopVisit"];
+  int n = 0;
+  for (JsonObject v : visits) {
+    if (n >= BUS_MAX) break;
+    JsonObject j = v["MonitoredVehicleJourney"];
+
+    // PublishedLineName is an array in SIRI v2 (["M14A-SBS"]); tolerate a
+    // bare string too.
+    JsonVariant ln = j["PublishedLineName"];
+    String line = ln.is<JsonArray>() ? String(ln[0] | "") : String(ln | "");
+    if (!line.startsWith(feed.linePrefix)) continue;
+
+    JsonObject mc = j["MonitoredCall"];
+    long e = isoToEpoch(mc["ExpectedArrivalTime"] | "");
+    if (e == 0) e = isoToEpoch(mc["AimedArrivalTime"] | "");
+    if (e == 0) continue;
+
+    g_bus[fi][n].epoch = e;
+    n++;
+  }
+  g_busCount[fi] = n;
+  Serial.printf("BUS %s: %d\n", feed.linePrefix, n);
+  progEnd(n > 0 ? '*' : '0');
+}
+
+void fetchBuses() {
+  if (BUSTIME_API_KEY[0] == '\0') return;  // no key compiled in -> section off
+  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) fetchOneBusFeed(fi);
+}
+
+// For each stop with buses, run through the upcoming arrivals, each one its own
+// frame carrying the route tag and the countdown: "M14 12mn" / "M9 12min" /
+// "M14 NOW". "min" is trimmed to "mn" when the whole thing would overflow the 8
+// columns (M14 + two-digit minutes). SIRI hands them back soonest-first already.
+void showBuses(long nowEpoch) {
+  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
+    if (g_busCount[fi] == 0) continue;
+
+    const char *disp = BUS_FEEDS[fi].disp;
+    for (int i = 0; i < g_busCount[fi]; i++) {
+      long mins = (g_bus[fi][i].epoch - nowEpoch + 30) / 60;
+
+      char frame[16];
+      if (mins <= 0) {
+        snprintf(frame, sizeof(frame), "%s NOW", disp);
+      } else {
+        if (mins > 99) mins = 99;
+        snprintf(frame, sizeof(frame), "%s %ldmin", disp, mins);
+        if (strlen(frame) > 8)  // "M14 12min" -> "M14 12mn"
+          snprintf(frame, sizeof(frame), "%s %ldmn", disp, mins);
+      }
+      showFrame(frame, 1300);
+    }
+  }
 }
 
 
@@ -939,117 +1152,36 @@ void fetchQuake() {
 }
 
 
-//  _               _
-// | |__  _   _ ___| |_ ___
-// | '_ \| | | / __| __/ _ \
-// | |_) | |_| \__ \ ||  __/
-// |_.__/ \__,_|___/\__\___|
+// __        ___ _____ _   ___         ____             __ _
+// \ \      / (_)  ___(_) / _ \ ___   / ___|___  _ __  / _(_) __ _
+//  \ \ /\ / /| | |_  | | | | / __| | |   / _ \| '_ \| |_| |/ _` |
+//   \ V  V / | |  _| | | | |_\__ \ | |__| (_) | | | |  _| | (_| |
+//    \_/\_/  |_|_|   |_|  \__/___/  \____\___/|_| |_|_| |_|\__, |
+//                                                          |___/
 //
-// Upcoming buses at each stop in BUS_FEEDS (M14A -> Abingdon Sq, M9 -> Battery
-// Pk City). Each stop is one-directional so no direction filtering, but stops
-// carry more than one route, so keep only the feed's linePrefix.
+// The captive-portal setup flow: an open AP + tiny web form to save WiFi
+// creds to flash, used when the mode switch is in SETUP.
 
-struct BusArr {
-  long epoch;
-  int  stopsAway;
-};
-
-BusArr g_bus[NUM_BUS_FEEDS][BUS_MAX];
-int    g_busCount[NUM_BUS_FEEDS] = {0};
-
-// Fetch one stop and refill g_bus[fi] / g_busCount[fi]. On any HTTP/JSON
-// trouble it leaves the previous list in place.
-void fetchOneBusFeed(int fi) {
-  const BusFeed &feed = BUS_FEEDS[fi];
-
-  progBegin();
-
-  HTTPClient http;
-  http.setUserAgent(USER_AGENT);
-  http.setConnectTimeout(4000);
-  http.setTimeout(4000);
-  http.begin(String(BUS_URL_BASE) + "?key=" + BUSTIME_API_KEY +
-             "&MonitoringRef=" + feed.stopRef);
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("BUS %s HTTP %d\n", feed.linePrefix, code);
-    http.end();
-    progEnd('X');
-    return;
-  }
-  String payload = http.getString();
-  http.end();
-
-  // One stop's SIRI response is small (a few KB), so just parse the whole
-  // thing -- no filter. (An earlier filter build was silently empty, which is
-  // why no buses ever showed.) SIRI nests fairly deep, so lift the limit.
-  JsonDocument doc;
-  DeserializationError err =
-      deserializeJson(doc, payload, DeserializationOption::NestingLimit(20));
-  if (err) {
-    Serial.printf("BUS %s parse error: %s\n", feed.linePrefix, err.c_str());
-    progEnd('X');
-    return;
-  }
-
-  JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]
-                        ["MonitoredStopVisit"];
-  int n = 0;
-  for (JsonObject v : visits) {
-    if (n >= BUS_MAX) break;
-    JsonObject j = v["MonitoredVehicleJourney"];
-
-    // PublishedLineName is an array in SIRI v2 (["M14A-SBS"]); tolerate a
-    // bare string too.
-    JsonVariant ln = j["PublishedLineName"];
-    String line = ln.is<JsonArray>() ? String(ln[0] | "") : String(ln | "");
-    if (!line.startsWith(feed.linePrefix)) continue;
-
-    JsonObject mc = j["MonitoredCall"];
-    long e = isoToEpoch(mc["ExpectedArrivalTime"] | "");
-    if (e == 0) e = isoToEpoch(mc["AimedArrivalTime"] | "");
-    if (e == 0) continue;
-
-    g_bus[fi][n].epoch     = e;
-    g_bus[fi][n].stopsAway = mc["NumberOfStopsAway"] | -1;
-    n++;
-  }
-  g_busCount[fi] = n;
-  Serial.printf("BUS %s: %d\n", feed.linePrefix, n);
-  progEnd(n > 0 ? '*' : '0');
-}
-
-void fetchBuses() {
-  if (BUSTIME_API_KEY[0] == '\0') return;  // no key compiled in -> section off
-  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) fetchOneBusFeed(fi);
-}
-
-// For each stop with buses, run through the upcoming arrivals, each one its own
-// frame carrying the route tag and the countdown: "M14 12mn" / "M9 12min" /
-// "M14 NOW". "min" is trimmed to "mn" when the whole thing would overflow the 8
-// columns (M14 + two-digit minutes). SIRI hands them back soonest-first already.
-void showBuses(long nowEpoch) {
-  for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
-    if (g_busCount[fi] == 0) continue;
-
-    const char *disp = BUS_FEEDS[fi].disp;
-    for (int i = 0; i < g_busCount[fi]; i++) {
-      long mins = (g_bus[fi][i].epoch - nowEpoch + 30) / 60;
-
-      char frame[16];
-      if (mins <= 0) {
-        snprintf(frame, sizeof(frame), "%s NOW", disp);
-      } else {
-        if (mins > 99) mins = 99;
-        snprintf(frame, sizeof(frame), "%s %ldmin", disp, mins);
-        if (strlen(frame) > 8)  // "M14 12min" -> "M14 12mn"
-          snprintf(frame, sizeof(frame), "%s %ldmn", disp, mins);
-      }
-      showFrame(frame, 1300);
-    }
-  }
-}
-
+// HTML template for the configuration page
+const char *htmlTemplate =
+  "<!DOCTYPE html>\n"
+  "<html>\n"
+  "<head>\n"
+  "  <title>uptown-f-esp32 Config</title>\n"
+  "</head>\n"
+  "<body>\n"
+  "  <h1>Andy's uptown-f-esp32 WIFI Config</h1>\n"
+  "  <p><a href=\"https://github.com/andyhomecode/ads-b-esp32\">https://github.com/andyhomecode/ads-b-esp32</a></p>\n"
+  "  <h2>Configure WiFi</h2>\n"
+  "  <form action=\"/save\" method=\"post\">\n"
+  "    <label for=\"ssid\">SSID:</label><br>\n"
+  "    <input type=\"text\" id=\"ssid\" name=\"ssid\" value=\"%s\"><br><br>\n"
+  "    <label for=\"password\">Password:</label><br>\n"
+  "    <input type=\"password\" id=\"password\" name=\"password\" value=\"%s\"><br><br>\n"
+  "    <input type=\"submit\" value=\"Save\">\n"
+  "  </form>\n"
+  "</body>\n"
+  "</html>\n";
 
 bool connectToWiFi(const char *ssid, const char *password) {
   WiFi.begin(ssid, password);
@@ -1067,14 +1199,14 @@ bool connectToWiFi(const char *ssid, const char *password) {
 
     char tempOut[20];
     sprintf(tempOut, "IP %s", WiFi.localIP().toString().c_str());
-    displayText(tempOut);
+    showText(tempOut);
     return true;
   } else {
     Serial.println("\nFailed to connect.");
 
     char tempOut[20];
     for (int i = 0; i < 3; i++)
-      displayText("Wi-Fi Failed to Connect");
+      showText("Wi-Fi Failed to Connect");
 
     return false;
   }
@@ -1086,12 +1218,12 @@ void startAccessPoint() {
                                 //the Wifi AP is only on when the switch is in SETUP,
                                 // and with Arduino's Harvard architecture there's very little attack surface for overflows or other such shenanigans
 
-  if (isConnected) {
+  if (g_wifiConnected) {
     // if we're already connected to wifi for some reason, restart so we can start the AP.
     ESP.restart();
   }
 
-  displayText("Connect to SUBWAY-ESP32...");
+  showText("Connect to SUBWAY-ESP32...");
 
   WiFi.softAP(apSSID, apPassword);
   IPAddress IP = WiFi.softAPIP();
@@ -1101,7 +1233,7 @@ void startAccessPoint() {
   sprintf(tempOut, "IP %s", IP.toString());
 
   for (int i = 0; i < 3; i++)
-    displayText(tempOut);
+    showText(tempOut);
 
   dnsServer.start(53, "*", IP);
 
@@ -1145,12 +1277,12 @@ void startAccessPoint() {
     // did someone flip the switch to Run from Setup?
     if (digitalRead(SWITCH_PIN) == HIGH) {
       // let them know and reboot.
-      displayText("-REBOOT-");
+      showText("-REBOOT-");
       delay(300);
       ESP.restart();
     }
 
-    displayText("-Setup-");
+    showText("-Setup-");
     dnsServer.processNextRequest();
     server.handleClient();
   }
@@ -1189,10 +1321,10 @@ void setup() {
   setBrightnessBoth(BRIGHT_FULL);
 
   // title screen
-  displayText("github.com/andyhomecode/ads-b-esp32");
-  displayText("FTRAIN +");
-  displayText("PLANES");
-  displayText(" V 4.11");
+  showText("github.com/andyhomecode/ads-b-esp32");
+  showText("FTRAIN +");
+  showText("PLANES");
+  showText(" V 4.11");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -1201,7 +1333,7 @@ void setup() {
 
   // If Setup switch is in RUN, try to connect to WiFi using stored creds
   if (digitalRead(SWITCH_PIN) == HIGH && connectToWiFi(ssid.c_str(), password.c_str())) {
-    isConnected = true;
+    g_wifiConnected = true;
 
     // Kick off NTP so we can turn arrival timestamps into a countdown.
     // Work in UTC (offset 0); the feed's timestamps carry their own offset.
@@ -1211,9 +1343,23 @@ void setup() {
     }
     Serial.printf("NTP epoch: %ld\n", (long)time(nullptr));
   } else {
-    isConnected = false;
+    g_wifiConnected = false;
   }
 }
+
+// Fires true the first time it's called, then again once every intervalMs --
+// replaces the hand-copied "static lastMs + static first" pair each feed's
+// refetch gate used to carry.
+struct RefetchTimer {
+  unsigned long lastMs = 0;
+  bool first = true;
+  bool due(unsigned long intervalMs) {
+    if (!first && millis() - lastMs < intervalMs) return false;
+    first = false;
+    lastMs = millis();
+    return true;
+  }
+};
 
 void loop() {
 
@@ -1225,18 +1371,18 @@ void loop() {
     // we're in setup mode
 
     // so show the web server and handle it.
-    displayText("*Setup*");
+    showText("*Setup*");
     startAccessPoint();  // we're not coming back from there.  It starts the wifi access point and web server.
   } else {
 
 
     if (WiFi.status() != WL_CONNECTED) {
       // ruh roh.  Not connected to wi-fi.
-      displayText("No Wi-fi");
+      showText("No Wi-fi");
       ESP.restart();  // maybe better luck next time?
     }
 
-    if (isConnected) {
+    if (g_wifiConnected) {
 
       //        _______________
       //   _____|_[]_[]_[]_[]__|__
@@ -1250,97 +1396,14 @@ void loop() {
       // - every pass through loop(), redraw the countdown from that cache so the
       //   minutes tick down without hammering the server
 
-      // Up to NUM_TRAINS each way, merged and sorted soonest-first for display.
-      static Arrival trains[2 * NUM_TRAINS];
-      static int     trainCount = 0;
-      static long fetchEpoch = 0;            // our clock at the moment of the last fetch
-      static unsigned long lastFetchMs = 0;
-      static bool haveData = false;
-
       progReset();  // start a fresh progress bar for whatever fetches fire below
-
-      if (!haveData || millis() - lastFetchMs >= REFETCH_MS) {
-        progBegin();
-        // Make HTTP GET to the MTA JSON proxy
-        HTTPClient http;
-        http.begin(String(API_URL_BASE) + STOP_ID);
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-          String payload = http.getString();
-          Serial.println(payload);
-
-          // Parse JSON
-          JsonDocument doc;
-          DeserializationError error = deserializeJson(doc, payload);
-          if (error) {
-            Serial.print("JSON parse error: ");
-            Serial.println(error.c_str());
-            progEnd('X');
-            blink(true);
-          } else {
-            blink(false);
-
-            // "now" from NTP, or fall back to the feed's own update time
-            long nowEpoch = (long)time(nullptr);
-            if (nowEpoch < 1700000000L) {
-              nowEpoch = isoToEpoch(doc["updated"] | "");
-            }
-
-            // N == northbound (uptown), S == southbound (downtown / Brooklyn).
-            // Take up to NUM_TRAINS from each, tagged with direction; the feed
-            // occasionally lists a stray non-F route here, so keep F only.
-            trainCount = 0;
-            struct { const char *key; char dir; } dirs[] = {{"N", 'U'}, {"S", 'D'}};
-            for (auto &d : dirs) {
-              int added = 0;
-              for (JsonObject t : doc["data"][0][d.key].as<JsonArray>()) {
-                if (added >= NUM_TRAINS) break;
-                if (String(t["route"] | "") != "F") continue;
-                long e = isoToEpoch(t["time"] | "");
-                if (e > 0) {
-                  trains[trainCount].epoch = e;
-                  trains[trainCount].dir   = d.dir;
-                  trainCount++;
-                  added++;
-                }
-              }
-            }
-
-            // Sort soonest-first (tiny list, plain insertion sort).
-            for (int a = 1; a < trainCount; a++) {
-              Arrival cur = trains[a];
-              int b = a - 1;
-              while (b >= 0 && trains[b].epoch > cur.epoch) {
-                trains[b + 1] = trains[b];
-                b--;
-              }
-              trains[b + 1] = cur;
-            }
-
-            fetchEpoch = nowEpoch;
-            lastFetchMs = millis();
-            haveData = true;
-            progEnd(trainCount > 0 ? '*' : '0');
-          }
-        } else {
-          Serial.printf("HTTP error: %d\n", httpCode);
-          progEnd('X');
-          displayText("HTTP " + String(httpCode));
-          blink(true);
-          ESP.restart();  // oh well
-        }
-        http.end();
-      }
+      fetchTrains();
 
       // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
       // Same decoupled pattern as the trains: poll here, draw from the cache.
       // Anything going wrong just clears the plane; the countdown is unaffected.
-      static unsigned long lastPlaneMs = 0;
-      static bool planeFirst = true;
-      if (planeFirst || millis() - lastPlaneMs >= ADSB_REFETCH_MS) {
-        planeFirst = false;
-        lastPlaneMs = millis();
-
+      static RefetchTimer planeTimer;
+      if (planeTimer.due(ADSB_REFETCH_MS)) {
         Plane p;
         if (fetchNorthernmostPlane(p)) {
           // still the same flight? keep the airline/origin we already resolved
@@ -1357,31 +1420,16 @@ void loop() {
       }
 
       // --- MTA BusTime: refresh the bus list on its own clock -------------
-      static unsigned long lastBusMs = 0;
-      static bool busFirst = true;
-      if (busFirst || millis() - lastBusMs >= BUS_REFETCH_MS) {
-        busFirst = false;
-        lastBusMs = millis();
-        fetchBuses();
-      }
+      static RefetchTimer busTimer;
+      if (busTimer.due(BUS_REFETCH_MS)) fetchBuses();
 
       // --- NWS: refresh the weather alert on its own (slow) clock ---------
-      static unsigned long lastWxMs = 0;
-      static bool wxFirst = true;
-      if (wxFirst || millis() - lastWxMs >= WX_REFETCH_MS) {
-        wxFirst = false;
-        lastWxMs = millis();
-        fetchWeatherAlert();
-      }
+      static RefetchTimer wxTimer;
+      if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
 
       // --- USGS: check for a big Tokyo quake -----------------------------
-      static unsigned long lastEqMs = 0;
-      static bool eqFirst = true;
-      if (eqFirst || millis() - lastEqMs >= EQ_REFETCH_MS) {
-        eqFirst = false;
-        lastEqMs = millis();
-        fetchQuake();
-      }
+      static RefetchTimer eqTimer;
+      if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
 
       // If we hit the network this pass, hold the finished bar a beat, then let
       // the first real frame scroll it away.
@@ -1393,7 +1441,7 @@ void loop() {
       // current time: NTP if we have it, else the fetch clock plus elapsed
       long nowEpoch = (long)time(nullptr);
       if (nowEpoch < 1700000000L) {
-        nowEpoch = fetchEpoch + (long)((millis() - lastFetchMs) / 1000);
+        nowEpoch = g_trainFetchEpoch + (long)((millis() - g_lastTrainFetchMs) / 1000);
       }
 
       if (g_plane.valid) {
@@ -1402,8 +1450,8 @@ void loop() {
         // they're current again the moment it passes.
         showPlane(g_plane);
       } else {
-        if (haveData) {
-          showArrivals(trains, trainCount, nowEpoch);
+        if (g_haveTrainData) {
+          showArrivals(nowEpoch);
         }
 
         // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
@@ -1411,10 +1459,9 @@ void loop() {
 
         // ...an active weather alert, if any -- just the event name, blinking.
         if (g_wxEvent.length()) {
-          // showFrame("* WX *", 2000);
           setBrightnessBoth(BRIGHT_FULL);  // no showFrame here to ramp us up
           blink(true);
-          displayText(g_wxEvent);
+          showText(g_wxEvent);
           blink(false);
           g_frame = "        ";
         }
@@ -1423,7 +1470,7 @@ void loop() {
         if (g_quakeLine.length()) {
           setBrightnessBoth(BRIGHT_FULL);
           blink(true);
-          displayText(g_quakeLine);
+          showText(g_quakeLine);
           blink(false);
           g_frame = "        ";
         }
@@ -1431,7 +1478,7 @@ void loop() {
 
     } else {
       Serial.println("Not connected to Wi-Fi.");
-      displayText("No Wi-fi");
+      showText("No Wi-fi");
       ESP.restart();
       //
       //   .------------------------.
