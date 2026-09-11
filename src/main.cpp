@@ -772,7 +772,7 @@ void showPlane(const Plane &p) {
       isAlpha(flight[0]) && isAlpha(flight[1]) && isAlpha(flight[2])) {
     flight = flight.substring(0, 3) + " " + flight.substring(3);
   }
-  displayText(flight);
+  displayText(flight, -1, 3000);
 
   displayText(p.airline.length() ? p.airline : "Unknown");
 
@@ -789,6 +789,9 @@ void showPlane(const Plane &p) {
 
   if (p.origin.length())
     displayText("FROM " + p.origin);
+
+  // show the flight one last time before fading out, so the user can read it
+  displayText(flight, -1, 3000);
 
   g_frame = "        ";  // displayText() bypasses the scroll state showFrame tracks
 }

@@ -151,6 +151,18 @@ at `~/.platformio/penv/bin/pio` (use that full path — a distro-packaged
 `/usr/bin/pio` may not work). Serial output over USB doesn't show on Linux for
 this board (see [Serial Monitor](#serial-monitor)).
 
+Spelled out in full (full binary path + explicit environment flag), build+flash
+is one command — `--target upload` always compiles first and only flashes if
+that succeeds:
+
+```sh
+~/.platformio/penv/bin/pio run --environment freenove_esp32_s3_wroom --target upload
+```
+
+Running the plain `pio run` (no `--target upload`) separately beforehand is
+optional — useful if you just want to see the compile succeed (and the RAM/flash
+size report) without also flashing.
+
 ### Secrets
 
 API keys are compiled in from `include/secrets.h`, which is **gitignored** — it
