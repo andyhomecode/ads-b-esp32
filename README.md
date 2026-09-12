@@ -21,10 +21,13 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
- - version 5.0
- - Sep 11, 2026
- - `main.cpp` reorganized into clearly-grouped sections (config, display,
-   per-feed fetch/show pairs) with consistent naming, no behavior change.
+ - version 5.1
+ - Sep 12, 2026
+ - Added a NYC OEM emergency alert feed (Notify NYC's live CAP feed), sharing
+   a `CapAlert`/`capIsHighUrgency()` severity-urgency threshold with the NWS
+   weather alert so both only interrupt the display for genuinely high-urgency
+   events. Each alert now blinks its source tag (`NWS` / `NYC OEM`) before the
+   event name.
 
 ## Features
 
@@ -53,9 +56,17 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   no key → the whole bus section is skipped, and a stop with nothing tracked
   (e.g. the M9 overnight) just doesn't draw.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
-  point, the event name (`Winter Weather Advisory`) scrolls across with the
-  display **blinking** to catch the eye — the event only, no headline or
-  instructions. Refreshed every 5 min; nothing shown when it's clear.
+  point, a blinking `NWS` tag then the event name (`Winter Weather Advisory`)
+  scroll across — the event only, no headline or instructions. Refreshed every
+  5 min; nothing shown when it's clear.
+- **NYC OEM emergency alert**: Notify NYC's live CAP (Common Alerting Protocol)
+  feed, checked every 5 min. Unlike the NWS alert (which is already scoped to
+  one point) this feed covers everything from a subway delay to a building
+  collapse, so it's filtered by `capIsHighUrgency()` — a blinking `NYC OEM` tag
+  then the event name only show for alerts that aren't clearly low
+  severity/urgency (blank/unknown fields are shown, not hidden, so a real
+  emergency a warning specialist tagged in a hurry doesn't get silently
+  dropped). Nothing shown otherwise.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
@@ -66,9 +77,9 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   full brightness. Plane details scroll horizontally (they're longer than the
   8 columns).
 - **Decoupled fetch**: each source (trains ~30s, adsb.lol ~20s, buses ~30s,
-  weather ~5min) polls on its own clock and the display loops off the caches
-  between fetches. A failed or empty fetch just leaves that block's last data (or
-  nothing) — the other blocks are unaffected.
+  weather ~5min, NYC OEM ~5min) polls on its own clock and the display loops
+  off the caches between fetches. A failed or empty fetch just leaves that
+  block's last data (or nothing) — the other blocks are unaffected.
 - **Fetch progress bar**: the HTTP calls block the loop, so while a fetch cycle
   runs the display becomes a dim left-to-right bar — one column per call. When a
   call starts, a `-` with its **decimal point lit** ("working"); when it returns
@@ -304,6 +315,9 @@ More pictures coming
   (gitignored) and fill in.
 - `lib/`: Local libraries (if any).
 - `case/`: OpenSCAD file for printing the case.
+- `tools/`: standalone scripts not part of the firmware build — e.g.
+  `nyc_oem_test.py`, the proof-of-concept/research trail for the NYC OEM
+  emergency alert feed.
 
 
 ## API Reference
@@ -345,6 +359,17 @@ More pictures coming
   `time` (epoch **ms**), `tsunami` (0/1). We scan the 5 for the newest that's
   `mag >= EQ_MIN_MAG` or `tsunami` and under `EQ_MAX_AGE_S` old. Empty
   `features[]` = all clear.
+- **NYC emergency alerts**: [`feeds.everbridge.net/feeds/453003085617722/rss/rss.xml`](https://a858-nycnotify.nyc.gov/)
+  — Notify NYC's live CAP feed (linked from their homepage footer), free, no
+  key. RSS `<item>`s don't carry severity/urgency themselves; each one's
+  `<enclosure>`/`<link>` points at a full CAP XML doc (OASIS CAP v1.2) that
+  does, so this is a two-hop fetch. We check the 5 most recent items and show
+  the newest whose `<severity>`/`<urgency>` aren't clearly low (`capIsHighUrgency()`
+  in `main.cpp`). See `tools/nyc_oem_test.py` for the full research trail — it
+  also covers the NYC Open Data Socrata dataset for this same feed
+  (`data.cityofnewyork.us/resource/8vv7-7wx3.json`), which was investigated
+  first but turned out to have no severity field and to have stopped updating
+  entirely as of 2025-09-15, so it's reference-only, not used by the device.
 
 ## License
 

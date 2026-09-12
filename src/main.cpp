@@ -118,6 +118,21 @@
 #define WX_URL          "https://api.weather.gov/alerts/active?point=40.7168,-73.9861"
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
 
+// --- NYC OEM emergency alerts (Notify NYC / Everbridge CAP feed) -----------
+// The live feed linked from the Notify NYC homepage footer -- a genuine CAP
+// (Common Alerting Protocol) feed, same vocabulary as NWS. Unlike NWS's single
+// JSON GET, this is two hops: the RSS list gives recent messages, and each
+// item points at a separate full CAP XML doc where severity/urgency actually
+// live. NYC OEM covers everything from a subway delay to a building collapse,
+// so unlike NWS we only surface it when capIsHighUrgency() says so. See
+// tools/nyc_oem_test.py for how this was proven out, including the full
+// source citations (OASIS CAP-feeds v1.0 wrapping spec, CAP v1.2 field spec)
+// and the caveat that the CAP-document leg was verified against a synthetic
+// doc, not a real one, since NYC had no active alert at test time.
+#define OEM_RSS_URL     "https://feeds.everbridge.net/feeds/453003085617722/rss/rss.xml"
+#define OEM_REFETCH_MS  300000        // 5 min, same cadence as NWS
+#define OEM_MAX_ITEMS   5             // only the most recent few are worth checking
+
 // --- USGS earthquakes near Tokyo ---------------------------------------------
 // The 5 most recent M>=4 within 300 km of Tokyo. We only *show* one if it's
 // mag >= EQ_MIN_MAG or tsunami-flagged, AND it happened in the last EQ_MAX_AGE_S
@@ -322,6 +337,49 @@ void blink(bool blinkOn) {
     alpha4_0.blinkRate(HT16K33_BLINK_OFF);
     alpha4_1.blinkRate(HT16K33_BLINK_OFF);
   }
+}
+
+
+// --- CAP alert vocabulary (shared by NWS + NYC OEM) -------------------------
+// Both feeds are Common Alerting Protocol messages under the hood -- NWS as
+// CAP-in-GeoJSON, NYC OEM as raw CAP XML -- and share the same severity/
+// urgency enums straight from the CAP v1.2 spec
+// (https://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2-os.html):
+// severity in {Extreme,Severe,Moderate,Minor,Unknown}, urgency in
+// {Immediate,Expected,Future,Past,Unknown}. See tools/nyc_oem_test.py for the
+// full source citations.
+
+struct CapAlert {
+  String event;
+  String severity;
+  String urgency;
+  String certainty;
+};
+
+// Fails OPEN: excludes only known-low values, rather than requiring known-high
+// ones. A real active alert with blank/"Unknown" severity or urgency (a CAP
+// producer under time pressure not filling every field -- seen for real in
+// NWS's own active-alerts list, which currently has a "Test Message" entry
+// with severity=Unknown, urgency=Unknown right alongside genuine warnings)
+// must still get through; silently dropping a real emergency because a field
+// was left blank is worse than showing one that turns out to be routine.
+bool capIsHighUrgency(const CapAlert &a) {
+  bool severityLow = (a.severity == "Minor" || a.severity == "Moderate");
+  bool urgencyLow  = (a.urgency  == "Future" || a.urgency  == "Past");
+  return !severityLow && !urgencyLow;
+}
+
+// Shows a CAP alert as a blinking source tag ("NWS", "NYC OEM") followed by
+// the event name, both flashing to catch the eye -- one shared treatment for
+// every CAP-based feed instead of each one rolling its own.
+void showAlert(const char *source, const String &event) {
+  if (!event.length()) return;
+  setBrightnessBoth(BRIGHT_FULL);
+  blink(true);
+  showText(source, -1, 1200);
+  showText(event, -1, 2500);
+  blink(false);
+  g_frame = "        ";
 }
 
 
@@ -935,6 +993,9 @@ void showPlane(const Plane &p) {
 // | |_) | |_| \__ \ ||  __/
 // |_.__/ \__,_|___/\__\___|
 //
+// by the way, Claude is terrible at doing figlets.
+// "buste"?  
+// 
 // Upcoming buses at each stop in BUS_FEEDS (M14A -> Abingdon Sq, M9 -> Battery
 // Pk City). Each stop is one-directional so no direction filtering, but stops
 // carry more than one route, so keep only the feed's linePrefix.
@@ -1047,8 +1108,13 @@ void showBuses(long nowEpoch) {
 //
 // Basic NWS emergency info: if there's an active alert for our point, its event
 // name gets a frame after the trains. Just the event -- no headline/instruction.
+// NWS alerts are CAP messages (CAP-in-GeoJSON), so severity/urgency are kept
+// alongside event via the shared CapAlert struct -- see capIsHighUrgency()
+// above -- but unlike NYC OEM, NWS still shows *any* active alert for our
+// point regardless of severity: the feed is already narrowly scoped to one
+// point, so it doesn't need the same noise filter NYC OEM does.
 
-String g_wxEvent;  // e.g. "Winter Weather Advisory"; "" when clear
+CapAlert g_wxAlert;  // e.g. event "Winter Weather Advisory"; event=="" when clear
 
 void fetchWeatherAlert() {
   progBegin();
@@ -1068,9 +1134,12 @@ void fetchWeatherAlert() {
   String payload = http.getString();
   http.end();
 
-  // Keep only features[*].properties.event -- full alert bodies are huge.
+  // Keep only features[*].properties.{event,severity,urgency} -- full alert
+  // bodies are huge.
   JsonDocument filter;
-  filter["features"][0]["properties"]["event"] = true;
+  filter["features"][0]["properties"]["event"]    = true;
+  filter["features"][0]["properties"]["severity"] = true;
+  filter["features"][0]["properties"]["urgency"]  = true;
   JsonDocument doc;
   if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
     Serial.println("WX JSON parse error");
@@ -1079,11 +1148,146 @@ void fetchWeatherAlert() {
   }
 
   JsonArray feats = doc["features"];
-  g_wxEvent = (!feats.isNull() && feats.size() > 0)
-                ? String(feats[0]["properties"]["event"] | "")
-                : "";
-  Serial.printf("WX: %s\n", g_wxEvent.length() ? g_wxEvent.c_str() : "(clear)");
-  progEnd(g_wxEvent.length() ? '*' : '0');    // '0' == no active alert
+  if (!feats.isNull() && feats.size() > 0) {
+    JsonObject props = feats[0]["properties"];
+    g_wxAlert.event    = String(props["event"]    | "");
+    g_wxAlert.severity = String(props["severity"] | "");
+    g_wxAlert.urgency  = String(props["urgency"]  | "");
+  } else {
+    g_wxAlert = CapAlert();
+  }
+  Serial.printf("WX: %s\n", g_wxAlert.event.length() ? g_wxAlert.event.c_str() : "(clear)");
+  progEnd(g_wxAlert.event.length() ? '*' : '0');    // '0' == no active alert
+}
+
+
+//                          ___  _____ __  __
+//   _ __  _   _  ___      / _ \| ____|  \/  |
+//  | '_ \| | | |/ __|    | | | |  _| | |\/| |
+//  | | | | |_| | (__     | |_| | |___| |  | |
+//  |_| |_|\__, |\___|     \___/|_____|_|  |_|
+//         |___/
+//
+// NYC OEM emergency alerts, via Notify NYC's live Everbridge CAP feed (see
+// OEM_RSS_URL above for the full background/citations). Unlike NWS this feed
+// covers everything from a subway delay to a building collapse, so we only
+// ever surface an item when capIsHighUrgency() says so -- otherwise it'd be
+// the noisiest thing on the display. g_oemAlert.event is "" when nothing
+// currently qualifies.
+
+CapAlert g_oemAlert;
+
+// Pulls the first <tag>...</tag> value out of a flat XML blob. Not a real XML
+// parser (no nesting/attribute/entity handling) -- CAP's <info> fields are
+// flat text leaves and RSS <item>/<link> are too, so this is enough and avoids
+// pulling in an XML library this project doesn't otherwise need.
+String xmlTag(const String &xml, const char *tag) {
+  String open  = String("<") + tag + ">";
+  String close = String("</") + tag + ">";
+  int i = xml.indexOf(open);
+  if (i < 0) return "";
+  i += open.length();
+  int j = xml.indexOf(close, i);
+  if (j < 0) return "";
+  return xml.substring(i, j);
+}
+
+// Per the OASIS CAP-feeds v1.0 spec, an RSS item wrapping a CAP alert points
+// at the full CAP XML via <enclosure type="application/cap+xml" url="..."/>;
+// some CAP-feed implementations instead put the CAP doc URL directly in
+// <link>. Try enclosure first, then link -- same fallback proven out in
+// tools/nyc_oem_test.py's _cap_doc_url().
+String oemCapDocUrl(const String &item) {
+  int enc = item.indexOf("<enclosure");
+  if (enc >= 0 && item.indexOf("cap", enc) >= 0) {
+    int u = item.indexOf("url=\"", enc);
+    if (u >= 0) {
+      u += 5;
+      int uEnd = item.indexOf('"', u);
+      if (uEnd > u) return item.substring(u, uEnd);
+    }
+  }
+  return xmlTag(item, "link");
+}
+
+void fetchOemAlert() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(OEM_RSS_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("OEM HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;  // keep the last known alert; don't drop a real one on a blip
+  }
+  String rss = http.getString();
+  http.end();
+
+  g_oemAlert = CapAlert();
+
+  // Walk each <item>...</item> newest-first, following its CAP doc link to
+  // check severity/urgency -- the RSS item itself doesn't carry them. Log
+  // every item checked (not just a match) so the serial monitor can tell
+  // "feed's quiet" apart from "feed's format changed and this is silently
+  // finding nothing" -- the two look identical otherwise.
+  int pos = 0;
+  int checked = 0;
+  for (; checked < OEM_MAX_ITEMS; checked++) {
+    int itemStart = rss.indexOf("<item>", pos);
+    if (itemStart < 0) break;
+    int itemEnd = rss.indexOf("</item>", itemStart);
+    if (itemEnd < 0) break;
+    String item = rss.substring(itemStart, itemEnd);
+    pos = itemEnd + 7;
+
+    String title  = xmlTag(item, "title");
+    String capUrl = oemCapDocUrl(item);
+    if (!capUrl.length()) {
+      Serial.printf("OEM item %d: \"%s\" -- no CAP doc URL found (enclosure/link)\n",
+                    checked, title.c_str());
+      continue;
+    }
+
+    HTTPClient capHttp;
+    capHttp.setUserAgent(USER_AGENT);
+    capHttp.setConnectTimeout(4000);
+    capHttp.setTimeout(4000);
+    capHttp.begin(capUrl);
+    int capCode = capHttp.GET();
+    if (capCode != HTTP_CODE_OK) {
+      Serial.printf("OEM item %d: \"%s\" -- CAP doc fetch HTTP %d\n",
+                    checked, title.c_str(), capCode);
+      capHttp.end();
+      continue;
+    }
+    String cap = capHttp.getString();
+    capHttp.end();
+
+    CapAlert a;
+    a.event     = xmlTag(cap, "event");
+    a.severity  = xmlTag(cap, "severity");
+    a.urgency   = xmlTag(cap, "urgency");
+    a.certainty = xmlTag(cap, "certainty");
+    bool match = capIsHighUrgency(a);
+
+    Serial.printf("OEM item %d: event=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" %s\n",
+                  checked, a.event.c_str(), a.severity.c_str(), a.urgency.c_str(),
+                  a.certainty.c_str(), match ? "-> SHOWING" : "(filtered out)");
+
+    if (match) {
+      g_oemAlert = a;
+      break;  // feed is newest-first, so the first qualifying item wins
+    }
+  }
+  if (checked == 0) Serial.println("OEM: 0 items in RSS feed");
+
+  Serial.printf("OEM: %s\n", g_oemAlert.event.length() ? g_oemAlert.event.c_str() : "(none)");
+  progEnd(g_oemAlert.event.length() ? '*' : '0');
 }
 
 
@@ -1361,6 +1565,15 @@ struct RefetchTimer {
   }
 };
 
+// **********************************************************
+//  _                   
+// | | ___   ___  _ __  
+// | |/ _ \ / _ \| '_ \ 
+// | | (_) | (_) | |_) |
+// |_|\___/ \___/| .__/ 
+//                |_|    
+// **********************************************************
+
 void loop() {
 
   Serial.println("Start of loop");
@@ -1427,6 +1640,10 @@ void loop() {
       static RefetchTimer wxTimer;
       if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
 
+      // --- NYC OEM: refresh the emergency alert on its own (slow) clock ---
+      static RefetchTimer oemTimer;
+      if (oemTimer.due(OEM_REFETCH_MS)) fetchOemAlert();
+
       // --- USGS: check for a big Tokyo quake -----------------------------
       static RefetchTimer eqTimer;
       if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
@@ -1444,6 +1661,26 @@ void loop() {
         nowEpoch = g_trainFetchEpoch + (long)((millis() - g_lastTrainFetchMs) / 1000);
       }
 
+      // Always show Weather alerts, NYC OEM alerts, and Tokyo quakes if present
+
+      // weather alert, source tag then just the title
+      showAlert("NWS", g_wxAlert.event);
+
+      // NYC OEM alert (only ever set when capIsHighUrgency() said yes)
+      showAlert("NYC OEM", g_oemAlert.event);
+
+      // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
+      if (g_quakeLine.length()) {
+        setBrightnessBoth(BRIGHT_FULL);
+        blink(true);
+        showText(g_quakeLine, -1, 2500);
+        blink(false);
+        g_frame = "        ";
+      }
+
+      // then if there's a plane, show just the plane because that's what's cool.
+      // Otherwise, show the trains and buses
+
       if (g_plane.valid) {
         // A plane over Brooklyn is the main event -- when one's up there, it's
         // all we show. Trains/buses/weather keep fetching in the background so
@@ -1457,23 +1694,7 @@ void loop() {
         // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
         showBuses(nowEpoch);
 
-        // ...an active weather alert, if any -- just the event name, blinking.
-        if (g_wxEvent.length()) {
-          setBrightnessBoth(BRIGHT_FULL);  // no showFrame here to ramp us up
-          blink(true);
-          showText(g_wxEvent);
-          blink(false);
-          g_frame = "        ";
-        }
 
-        // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
-        if (g_quakeLine.length()) {
-          setBrightnessBoth(BRIGHT_FULL);
-          blink(true);
-          showText(g_quakeLine);
-          blink(false);
-          g_frame = "        ";
-        }
       }
 
     } else {
