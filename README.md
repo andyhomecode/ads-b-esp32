@@ -21,6 +21,43 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
+ - version 5.5
+ - Sep 12, 2026
+ - NYC OEM alert's source tag now shows `OEM` plus its CAP `<category>`
+   (e.g. `OEM GEO`) instead of a bare `NYC OEM`, since category is what
+   decides whether an OEM alert qualifies at all as of 5.4 — showing it
+   makes it obvious at a glance which bucket the alert fell into.
+ - version 5.4
+ - Sep 12, 2026
+ - Fixed a bug where the NYC OEM alert could go blank even with a real active
+   alert in the feed: the cheap "does this title look English" pre-filter
+   (`oemTitleLooksEnglish()`) assumed only English items carry the
+   `"Notify NYC - ..."` prefix, but a live "Public Pool Closure" alert's
+   Yiddish/Urdu/Spanish/Russian/Polish/Korean translations all carried that
+   same prefix too — six of them in a row burned through
+   `OEM_MAX_CAP_FETCHES` before the real English item was ever reached. Now
+   also requires the title to be plain ASCII, which real English titles are
+   and nearly every translation isn't.
+ - Also added a `<category>` check to `capIsHighUrgency()`: a "Public Pool
+   Closure" alert and a real "Basement Preparedness" flood-prep alert both
+   had identical severity=Severe/urgency=Immediate (NYC's Everbridge setup
+   tags almost everything that way), so severity/urgency alone couldn't tell
+   a routine notice from a real one — but CAP `<category>` could (`Health`
+   vs. `Geo`). `category == "Health"` is now excluded, same fails-open
+   denylist style as severity/urgency. See "NYC OEM alert categories" under
+   API Reference for the full CAP category table and why this is a denylist
+   rather than an allowlist.
+ - version 5.3
+ - Sep 12, 2026
+ - Plane spotter now filters out JFK-bound aircraft that were sneaking into
+   the "LGA final" display. Geometry alone (bounding box + altitude) can't
+   reliably tell LGA and JFK finals apart over Brooklyn — they can share the
+   same approach heading depending on the day's runway configuration — so the
+   existing adsb.lol `routeset` lookup (already used for the origin airport)
+   is now also used to confirm the destination: a plane whose route plausibly
+   resolves to somewhere other than LGA is hidden instead of shown with a
+   blank origin. A route lookup that fails or is inconclusive still shows the
+   plane as before (fails open, same as the OEM alert severity filter).
  - version 5.2
  - Sep 12, 2026
  - NYC OEM alert now shows the alert's actual title instead of its CAP `event`
@@ -74,15 +111,17 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 - **NYC OEM emergency alert**: Notify NYC's live CAP (Common Alerting Protocol)
   feed, checked every 5 min. Unlike the NWS alert (which is already scoped to
   one point) this feed covers everything from a subway delay to a building
-  collapse, so it's filtered by `capIsHighUrgency()` — a blinking `NYC OEM` tag
-  then the alert's title (not its CAP `event`, which for this feed is always
+  collapse, so it's filtered by `capIsHighUrgency()` — a blinking `OEM` tag
+  (plus its CAP category, e.g. `OEM GEO`) then the alert's title (not its CAP `event`, which for this feed is always
   the generic "Civil Emergency Message" SAME code name; the title is cleaned
   of OEM's "Notify NYC - ... (NYC)" wrapper, e.g. `Basement Preparedness -
-  9/13`) only shows for alerts that aren't clearly low severity/urgency
-  (blank/unknown fields are shown, not hidden, so a real emergency a warning
-  specialist tagged in a hurry doesn't get silently dropped). OEM re-sends
-  every alert once per language; only the English copy (`senderName` =
-  `NYCEM [English]`) is ever shown. Nothing shown otherwise.
+  9/13`) only shows for alerts that aren't clearly low severity/urgency, or
+  category `Health` (blank/unknown severity/urgency fields are shown, not
+  hidden, so a real emergency a warning specialist tagged in a hurry doesn't
+  get silently dropped — see "NYC OEM alert categories" under API Reference
+  for why `Health` alone is excluded). OEM re-sends every alert once per
+  language; only the English copy (`senderName` = `NYCEM [English]`) is ever
+  shown. Nothing shown otherwise.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
@@ -125,6 +164,16 @@ keeps only `A3` (airliner-sized) traffic between `ADSB_ALT_MIN` and
 `ADSB_ALT_MAX` feet — jets actually on final, not high overflights or little
 planes — and shows the one with the **highest latitude** (northern-most =
 closest to touchdown at LGA, the plane icon above).
+
+That box and altitude band also catches JFK finals over the same stretch of
+Brooklyn, and JFK/LGA approaches can share the same heading depending on the
+day's runway configuration, so geometry can't fully separate them. The
+destination is confirmed instead: the same `routeset` lookup used for the
+origin airport (see [Plane routes](#api-reference) below) is checked for LGA,
+and a plane whose route plausibly resolves to somewhere else (e.g. JFK) is
+hidden rather than shown with a blank origin. An inconclusive lookup (network
+hiccup, unresolvable callsign) still shows the plane — same fails-open
+philosophy as the NWS/NYC OEM alert severity filter.
 
 ## Hardware
 
@@ -360,10 +409,12 @@ More pictures coming
   `_airports[]` + a `plausible` flag, and is position-aware so it resolves the
   right leg of a multi-stop route. **Only answers if the request carries a
   `Referer` from an `adsb.lol` origin** — otherwise an empty `201` (which is why
-  this was mistaken for decommissioned). Since the plane is on final into LGA,
-  the origin is the `_airports` entry just before the LGA one. (adsbdb.com was
-  used here before but its callsign→route table is often stale — it had RPA5753
-  as JFK→CLE when it was really PIT→LGA.)
+  this was mistaken for decommissioned). This same lookup does double duty:
+  the origin is the `_airports` entry just before the LGA one, and if a
+  plausible route doesn't contain LGA at all, the plane is confirmed bound for
+  somewhere else (e.g. JFK) and hidden rather than shown with no origin. (adsbdb.com
+  was used here before but its callsign→route table is often stale — it had
+  RPA5753 as JFK→CLE when it was really PIT→LGA.)
 - **Weather alerts**: [`api.weather.gov/alerts/active?point={lat},{lon}`](https://www.weather.gov/documentation/services-web-api)
   — free, no key. Returns a GeoJSON `FeatureCollection`; we read
   `features[0].properties.event` (via an ArduinoJson filter, since full alert
@@ -377,21 +428,64 @@ More pictures coming
   `features[]` = all clear.
 - **NYC emergency alerts**: [`feeds.everbridge.net/feeds/453003085617722/rss/rss.xml`](https://a858-nycnotify.nyc.gov/)
   — Notify NYC's live CAP feed (linked from their homepage footer), free, no
-  key. RSS `<item>`s don't carry severity/urgency (or language) themselves;
-  each one's `<enclosure>`/`<link>` points at a full CAP XML doc (OASIS CAP
-  v1.2) that does, so this is a two-hop fetch. OEM re-sends every alert once
-  per language, so we scan up to `OEM_MAX_RSS_ITEMS` (40) RSS items cheaply
-  (a free string check on each `<title>` — English items are titled
-  `"Notify NYC - ..."`, translations aren't) and only spend an actual CAP-doc
-  fetch, capped at `OEM_MAX_CAP_FETCHES` (6), on candidates that pass. The
-  first candidate whose CAP doc confirms `senderName` = `NYCEM [English]` and
-  whose `<severity>`/`<urgency>` aren't clearly low (`capIsHighUrgency()` in
-  `main.cpp`) wins; its `<headline>` (cleaned of the "Notify NYC - ... (NYC)"
-  wrapper) is what's shown. See `tools/nyc_oem_test.py` for the full research
-  trail — it also covers the NYC Open Data Socrata dataset for this same feed
+  key. RSS `<item>`s don't carry severity/urgency/category (or language)
+  themselves; each one's `<enclosure>`/`<link>` points at a full CAP XML doc
+  (OASIS CAP v1.2) that does, so this is a two-hop fetch. OEM re-sends every
+  alert once per language, so we scan up to `OEM_MAX_RSS_ITEMS` (40) RSS
+  items cheaply (a free check on each `<title>`: English items are titled
+  `"Notify NYC - ..."` **and** are plain ASCII — the prefix alone isn't
+  enough, since some alert templates' translations carry it too, just
+  followed by non-ASCII native-language text) and only spend an actual
+  CAP-doc fetch, capped at `OEM_MAX_CAP_FETCHES` (6), on candidates that
+  pass. The first candidate whose CAP doc confirms `senderName` =
+  `NYCEM [English]` and whose `<severity>`/`<urgency>`/`<category>` aren't
+  clearly low (`capIsHighUrgency()` in `main.cpp` — see "NYC OEM alert
+  categories" below for the `<category>` part) wins; its `<headline>`
+  (cleaned of the "Notify NYC - ... (NYC)" wrapper) is what's shown. See
+  `tools/nyc_oem_test.py` for the full research trail — it also covers the
+  NYC Open Data Socrata dataset for this same feed
   (`data.cityofnewyork.us/resource/8vv7-7wx3.json`), which was investigated
   first but turned out to have no severity field and to have stopped updating
   entirely as of 2025-09-15, so it's reference-only, not used by the device.
+
+### NYC OEM alert categories
+
+Every CAP alert (NYC OEM's included) carries an `<info><category>` field from
+a fixed enum defined by the
+[OASIS CAP v1.2 spec, §3.2.2](https://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2-os.html):
+
+| Value | Definition |
+|-------|-----------|
+| `Geo` | Geophysical (inc. landslide) |
+| `Met` | Meteorological (inc. flood) |
+| `Safety` | General emergency and public safety |
+| `Security` | Law enforcement, military, homeland and local/private security |
+| `Rescue` | Rescue and recovery |
+| `Fire` | Fire suppression and rescue |
+| `Health` | Medical and public health |
+| `Env` | Pollution and other environmental |
+| `Transport` | Public and private transportation |
+| `Infra` | Utility, telecommunication, other non-transport infrastructure |
+| `CBRNE` | Chemical, Biological, Radiological, Nuclear or High-Yield Explosive threat or attack |
+| `Other` | Other events |
+
+`capIsHighUrgency()` excludes `category == "Health"` — confirmed live on
+2026-09-12, where a "Public Pool Closure" notice (`category=Health`) and a
+real "Basement Preparedness" flood-prep alert (`category=Geo`) both carried
+identical `severity=Severe`/`urgency=Immediate`, so severity/urgency alone
+couldn't separate the routine notice from the real one.
+
+**This is deliberately a denylist of one confirmed-noisy category, not an
+allowlist of "emergency" categories.** Don't be tempted to flip it to "only
+show Geo/Met/Fire/Security/CBRNE/Rescue" — the same live check found NYC's
+own category tagging doesn't reliably follow the spec's semantics: that
+flood-prep alert was tagged `Geo`, not `Met`, even though the spec lists
+flood as the *example* under `Met`. If NYC tags a real weather emergency,
+power outage (`Infra`), or attack (`Security`/`CBRNE`) in some other category
+than you'd expect from this table, an allowlist would hide it; a denylist
+degrades to "shows one extra noisy category" at worst. If a future alert
+type turns out to be similarly noisy, add its category here rather than
+inverting the filter.
 
 ## License
 

@@ -365,6 +365,7 @@ struct CapAlert {
   String severity;
   String urgency;
   String certainty;
+  String category;  // CAP <category> -- OEM only; see capIsHighUrgency() below
 };
 
 // Fails OPEN: excludes only known-low values, rather than requiring known-high
@@ -374,13 +375,28 @@ struct CapAlert {
 // with severity=Unknown, urgency=Unknown right alongside genuine warnings)
 // must still get through; silently dropping a real emergency because a field
 // was left blank is worse than showing one that turns out to be routine.
+//
+// category=="Health" is excluded the same way. Caught live on 2026-09-12: a
+// "Public Pool Closure" notice and a real "Basement Preparedness" flood-prep
+// advisory both carried identical severity=Severe/urgency=Immediate (NYC's
+// Everbridge setup tags nearly everything that way), so severity/urgency
+// alone couldn't tell them apart -- but their CAP <category> did: Health vs.
+// Geo. See README.md's "NYC OEM alert categories" section for the full CAP
+// category table and why this is a denylist (Health only) rather than an
+// allowlist of "emergency" categories -- the same fails-open reasoning as
+// above applies: NYC's own category tagging doesn't reliably match the CAP
+// spec's semantics (that flood-prep alert was Geo, not Met, despite the spec
+// listing flood as the example under Met), so guessing every category a real
+// emergency might land in is riskier than excluding the one confirmed-noisy
+// category.
 bool capIsHighUrgency(const CapAlert &a) {
   bool severityLow = (a.severity == "Minor" || a.severity == "Moderate");
   bool urgencyLow  = (a.urgency  == "Future" || a.urgency  == "Past");
-  return !severityLow && !urgencyLow;
+  bool categoryLow = (a.category == "Health");
+  return !severityLow && !urgencyLow && !categoryLow;
 }
 
-// Shows a CAP alert as a blinking source tag ("NWS", "NYC OEM") followed by
+// Shows a CAP alert as a blinking source tag ("NWS", "OEM GEO") followed by
 // the event name, both flashing to catch the eye -- one shared treatment for
 // every CAP-based feed instead of each one rolling its own.
 void showAlert(const char *source, const String &event) {
@@ -795,6 +811,9 @@ struct Plane {
   String airline;               // resolved friendly name, or "" until looked up
   String origin;                // "MIA MIAMI", or "" if unknown / already at LGA
   bool   routeChecked = false;  // already resolved the route for this callsign?
+  bool   confirmedNotLGA = false;  // routeset resolved a plausible route without
+                                    // LGA in it (e.g. actually bound for JFK) --
+                                    // this plane gets hidden, not just blank-origin
 };
 
 Plane g_plane;
@@ -876,13 +895,20 @@ static bool airportIsLGA(JsonObjectConst ap) {
          String(ap["icao"] | "") == "KLGA";
 }
 
-// Resolve airline + origin for p. Airline name comes from the local table
-// (short, offline). Origin comes from adsb.lol's routeset: POST the callsign
-// plus the plane's current position, get back `_airports` and `plausible`.
-// Since this plane is on final into LGA, LGA is the last airport in the route
-// -- the origin is the one right before it. If the route has no LGA, or isn't
-// plausible, or the lookup errors, we show no origin (better than a wrong one)
-// and, on a transport error, leave routeChecked false so the next pass retries.
+// Resolve airline + origin for p, and confirm it's actually LGA-bound. Airline
+// name comes from the local table (short, offline). Origin + destination come
+// from adsb.lol's routeset: POST the callsign plus the plane's current
+// position, get back `_airports` and `plausible`. The bounding box + altitude
+// band this plane was already picked from (see fetchNorthernmostPlane()) also
+// catches JFK finals over the same stretch of Brooklyn -- LGA and JFK can even
+// share the same approach heading depending on the day's runway configuration,
+// so geometry alone can't tell them apart. This is the disambiguator: if the
+// route resolves and plausibly does NOT include LGA, p.confirmedNotLGA is set
+// and the caller hides the plane instead of showing a wrong-airport arrival.
+// A route that fails to resolve (network hiccup, unplausible, unknown
+// callsign) is NOT treated as "not LGA" -- same fails-open reasoning as
+// capIsHighUrgency(): inconclusive data must not hide a real LGA arrival. On
+// a transport error, routeChecked is left false so the next pass retries.
 void lookupRoute(Plane &p) {
   if (p.callsign.length() >= 3) {
     String icao3 = p.callsign.substring(0, 3);
@@ -913,17 +939,25 @@ void lookupRoute(Plane &p) {
     JsonDocument doc;
     if (!deserializeJson(doc, http.getString()) && (doc[0]["plausible"] | false)) {
       JsonArrayConst aps = doc[0]["_airports"];
-      // walk back from the end to the last LGA entry that has a predecessor
-      for (int i = aps.size() - 1; i >= 1; i--) {
-        if (!airportIsLGA(aps[i])) continue;
-        JsonObjectConst from = aps[i - 1];
-        String fi = String(from["iata"] | "");
-        if (fi.isEmpty()) break;
-        String fc = String(from["location"] | "");
-        p.origin = fc.isEmpty() ? fi : (fi + " " + fc);
-        p.origin.toUpperCase();
-        pc = '*';
-        break;
+      bool lgaFound = false;
+      for (int i = aps.size() - 1; i >= 0; i--) {
+        if (airportIsLGA(aps[i])) { lgaFound = true; break; }
+      }
+      if (!lgaFound) {
+        p.confirmedNotLGA = true;  // plausible route, but not headed to LGA
+      } else {
+        // walk back from the end to the last LGA entry that has a predecessor
+        for (int i = aps.size() - 1; i >= 1; i--) {
+          if (!airportIsLGA(aps[i])) continue;
+          JsonObjectConst from = aps[i - 1];
+          String fi = String(from["iata"] | "");
+          if (fi.isEmpty()) break;
+          String fc = String(from["location"] | "");
+          p.origin = fc.isEmpty() ? fi : (fi + " " + fc);
+          p.origin.toUpperCase();
+          pc = '*';
+          break;
+        }
       }
     }
   } else {
@@ -1213,14 +1247,29 @@ bool oemIsEnglish(const String &cap) {
 }
 
 // Cheap pre-filter on the RSS item's own <title>, before spending an HTTPS
-// fetch on its CAP doc: OEM's English items are titled "Notify NYC - ...",
-// while every translation observed live (Spanish, French, Polish, Yiddish,
-// etc) uses only the native-language text with no such prefix. This is a
-// convention, not a spec guarantee, so oemIsEnglish() above still makes the
-// authoritative call against the fetched CAP doc's senderName -- this just
-// avoids fetching a CAP doc at all for the items that are obviously not it.
+// fetch on its CAP doc: OEM's English items are titled "Notify NYC - ...".
+// That prefix alone isn't enough, though -- caught live on 2026-09-12, a
+// "Public Pool Closure" alert's Yiddish/Urdu/Spanish/Russian/Polish/Korean
+// items ALL carried the same "Notify NYC - <native text>" prefix (only a
+// few, like French, happened to read as plain ASCII too), unlike a
+// same-day "Basement Preparedness" alert whose translations had no prefix
+// at all. Six prefixed-but-foreign items in a row burned through
+// OEM_MAX_CAP_FETCHES before the real English item (or the next alert
+// after it) was ever reached, so the display went blank instead of showing
+// either alert. Requiring the whole title to be plain ASCII on top of the
+// prefix fixes that: real English titles are ASCII, and almost every
+// translation (accented Latin, Cyrillic, CJK, RTL scripts, or an em dash)
+// fails it, so only ~1 stray ASCII translation (e.g. French) ever costs a
+// wasted fetch instead of six. This is a convention, not a spec guarantee,
+// so oemIsEnglish() above still makes the authoritative call against the
+// fetched CAP doc's senderName -- this just avoids fetching a CAP doc at
+// all for the items that are obviously not it.
 bool oemTitleLooksEnglish(const String &title) {
-  return title.startsWith("Notify NYC");
+  if (!title.startsWith("Notify NYC")) return false;
+  for (size_t i = 0; i < title.length(); i++) {
+    if ((uint8_t)title[i] >= 0x80) return false;  // non-ASCII byte -> a translation
+  }
+  return true;
 }
 
 // OEM headlines are wrapped as "Notify NYC - <specific title> (NYC)"; the
@@ -1331,12 +1380,13 @@ void fetchOemAlert() {
     a.severity  = xmlTag(cap, "severity");
     a.urgency   = xmlTag(cap, "urgency");
     a.certainty = xmlTag(cap, "certainty");
+    a.category  = xmlTag(cap, "category");
     bool english = oemIsEnglish(cap);
     bool match = english && capIsHighUrgency(a);
 
-    Serial.printf("OEM item: event=\"%s\" headline=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" %s\n",
+    Serial.printf("OEM item: event=\"%s\" headline=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" category=\"%s\" %s\n",
                   a.event.c_str(), a.headline.c_str(), a.severity.c_str(),
-                  a.urgency.c_str(), a.certainty.c_str(),
+                  a.urgency.c_str(), a.certainty.c_str(), a.category.c_str(),
                   match ? "-> SHOWING" : (english ? "(filtered out)" : "(non-English, skipped)"));
 
     if (match) {
@@ -1589,7 +1639,7 @@ void setup() {
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("FTRAIN +");
   showText("PLANES");
-  showText(" V 5.2");
+  showText(" V 5.5");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -1680,14 +1730,19 @@ void loop() {
       if (planeTimer.due(ADSB_REFETCH_MS)) {
         Plane p;
         if (fetchNorthernmostPlane(p)) {
-          // still the same flight? keep the airline/origin we already resolved
-          if (g_plane.valid && g_plane.callsign == p.callsign) {
-            p.airline      = g_plane.airline;
-            p.origin       = g_plane.origin;
-            p.routeChecked = g_plane.routeChecked;
+          // still the same flight? keep what we already resolved for it --
+          // checked by callsign, not g_plane.valid, so a callsign we already
+          // confirmedNotLGA last cycle (and so hid) doesn't get re-queried
+          // against routeset every 20s for as long as it lingers in the box.
+          if (g_plane.callsign == p.callsign && p.callsign.length()) {
+            p.airline         = g_plane.airline;
+            p.origin          = g_plane.origin;
+            p.routeChecked    = g_plane.routeChecked;
+            p.confirmedNotLGA = g_plane.confirmedNotLGA;
           }
           g_plane = p;
           if (!g_plane.routeChecked) lookupRoute(g_plane);
+          if (g_plane.confirmedNotLGA) g_plane.valid = false;  // e.g. actually JFK-bound
         } else {
           g_plane.valid = false;  // nobody on final in the bounding area
         }
@@ -1735,8 +1790,16 @@ void loop() {
       // headline is where OEM puts the actual "what" (e.g. "Basement
       // Preparedness - 9/13", already stripped of its "Notify NYC - ...
       // (NYC)" wrapper by oemCleanHeadline()). Fall back to event only if
-      // headline is somehow empty (malformed CAP doc).
-      showAlert("NYC OEM", g_oemAlert.headline.length() ? g_oemAlert.headline : g_oemAlert.event);
+      // headline is somehow empty (malformed CAP doc). Source tag is "OEM"
+      // plus the CAP <category> (e.g. "OEM GEO") rather than a bare "NYC
+      // OEM", since category is now the thing that decides whether an OEM
+      // alert qualifies at all (see capIsHighUrgency()) -- showing it lets
+      // you tell at a glance which bucket tripped the filter.
+      String oemSource = g_oemAlert.category.length()
+                            ? "OEM " + g_oemAlert.category
+                            : String("OEM");
+      oemSource.toUpperCase();
+      showAlert(oemSource.c_str(), g_oemAlert.headline.length() ? g_oemAlert.headline : g_oemAlert.event);
 
       // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
       if (g_quakeLine.length()) {
