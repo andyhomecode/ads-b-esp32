@@ -131,7 +131,17 @@
 // doc, not a real one, since NYC had no active alert at test time.
 #define OEM_RSS_URL     "https://feeds.everbridge.net/feeds/453003085617722/rss/rss.xml"
 #define OEM_REFETCH_MS  300000        // 5 min, same cadence as NWS
-#define OEM_MAX_ITEMS   5             // only the most recent few are worth checking
+// OEM re-sends every alert once per language, and translations are NOT
+// reliably older/newer than the English copy in feed order -- a single alert
+// seen live had 12 translations sorted ahead of the English item (13
+// items total). OEM_MAX_RSS_ITEMS must comfortably cover that so the walk
+// below doesn't give up before reaching English. It's cheap to scan that
+// many (no HTTP per item -- see oemTitleLooksEnglish()); OEM_MAX_CAP_FETCHES
+// separately bounds the expensive part (each candidate needs its own CAP doc
+// HTTPS fetch), which normally fires at most once since only the English
+// item's RSS title should ever pass the pre-filter.
+#define OEM_MAX_RSS_ITEMS   40
+#define OEM_MAX_CAP_FETCHES 6
 
 // --- USGS earthquakes near Tokyo ---------------------------------------------
 // The 5 most recent M>=4 within 300 km of Tokyo. We only *show* one if it's
@@ -351,6 +361,7 @@ void blink(bool blinkOn) {
 
 struct CapAlert {
   String event;
+  String headline;
   String severity;
   String urgency;
   String certainty;
@@ -1192,6 +1203,37 @@ String xmlTag(const String &xml, const char *tag) {
   return xml.substring(i, j);
 }
 
+// OEM re-sends every alert once per language (senderName "NYCEM [English]",
+// "NYCEM [Spanish]", etc, all with identical severity/urgency/event) -- only
+// the English one should ever reach the display. Translations aren't
+// reliably older/newer than the English item in feed order, so this can't be
+// skipped by position and must be checked per-item against the CAP doc.
+bool oemIsEnglish(const String &cap) {
+  return xmlTag(cap, "senderName") == "NYCEM [English]";
+}
+
+// Cheap pre-filter on the RSS item's own <title>, before spending an HTTPS
+// fetch on its CAP doc: OEM's English items are titled "Notify NYC - ...",
+// while every translation observed live (Spanish, French, Polish, Yiddish,
+// etc) uses only the native-language text with no such prefix. This is a
+// convention, not a spec guarantee, so oemIsEnglish() above still makes the
+// authoritative call against the fetched CAP doc's senderName -- this just
+// avoids fetching a CAP doc at all for the items that are obviously not it.
+bool oemTitleLooksEnglish(const String &title) {
+  return title.startsWith("Notify NYC");
+}
+
+// OEM headlines are wrapped as "Notify NYC - <specific title> (NYC)"; the
+// wrapper is boilerplate repeated on every alert, so strip it and scroll just
+// the specific title, e.g. "Basement Preparedness - 9/13".
+String oemCleanHeadline(String h) {
+  static const char PREFIX[] = "Notify NYC - ";
+  static const char SUFFIX[] = " (NYC)";
+  if (h.startsWith(PREFIX)) h = h.substring(strlen(PREFIX));
+  if (h.endsWith(SUFFIX))   h = h.substring(0, h.length() - strlen(SUFFIX));
+  return h;
+}
+
 // Per the OASIS CAP-feeds v1.0 spec, an RSS item wrapping a CAP alert points
 // at the full CAP XML via <enclosure type="application/cap+xml" url="..."/>;
 // some CAP-feed implementations instead put the CAP doc URL directly in
@@ -1230,14 +1272,19 @@ void fetchOemAlert() {
 
   g_oemAlert = CapAlert();
 
-  // Walk each <item>...</item> newest-first, following its CAP doc link to
-  // check severity/urgency -- the RSS item itself doesn't carry them. Log
-  // every item checked (not just a match) so the serial monitor can tell
+  // Walk each <item>...</item> newest-first. Most are translations of the
+  // same alert (see OEM_MAX_RSS_ITEMS above) -- skip those via a free string
+  // check on the RSS title before ever touching the network, so the (much
+  // smaller) OEM_MAX_CAP_FETCHES budget for the expensive part -- following a
+  // candidate's CAP doc link for severity/urgency, which the RSS item doesn't
+  // carry -- is normally spent on just the one English item. Log every item
+  // actually fetched (not just a match) so the serial monitor can tell
   // "feed's quiet" apart from "feed's format changed and this is silently
   // finding nothing" -- the two look identical otherwise.
   int pos = 0;
-  int checked = 0;
-  for (; checked < OEM_MAX_ITEMS; checked++) {
+  int scanned = 0;
+  int fetched = 0;
+  for (; scanned < OEM_MAX_RSS_ITEMS; scanned++) {
     int itemStart = rss.indexOf("<item>", pos);
     if (itemStart < 0) break;
     int itemEnd = rss.indexOf("</item>", itemStart);
@@ -1245,11 +1292,19 @@ void fetchOemAlert() {
     String item = rss.substring(itemStart, itemEnd);
     pos = itemEnd + 7;
 
-    String title  = xmlTag(item, "title");
+    String title = xmlTag(item, "title");
+    if (!oemTitleLooksEnglish(title)) continue;  // translation -- no HTTP spent
+
+    if (fetched >= OEM_MAX_CAP_FETCHES) {
+      Serial.println("OEM: hit OEM_MAX_CAP_FETCHES, stopping early");
+      break;
+    }
+
     String capUrl = oemCapDocUrl(item);
     if (!capUrl.length()) {
       Serial.printf("OEM item %d: \"%s\" -- no CAP doc URL found (enclosure/link)\n",
-                    checked, title.c_str());
+                    fetched, title.c_str());
+      fetched++;
       continue;
     }
 
@@ -1261,30 +1316,36 @@ void fetchOemAlert() {
     int capCode = capHttp.GET();
     if (capCode != HTTP_CODE_OK) {
       Serial.printf("OEM item %d: \"%s\" -- CAP doc fetch HTTP %d\n",
-                    checked, title.c_str(), capCode);
+                    fetched, title.c_str(), capCode);
       capHttp.end();
+      fetched++;
       continue;
     }
     String cap = capHttp.getString();
     capHttp.end();
+    fetched++;
 
     CapAlert a;
     a.event     = xmlTag(cap, "event");
+    a.headline  = oemCleanHeadline(xmlTag(cap, "headline"));
     a.severity  = xmlTag(cap, "severity");
     a.urgency   = xmlTag(cap, "urgency");
     a.certainty = xmlTag(cap, "certainty");
-    bool match = capIsHighUrgency(a);
+    bool english = oemIsEnglish(cap);
+    bool match = english && capIsHighUrgency(a);
 
-    Serial.printf("OEM item %d: event=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" %s\n",
-                  checked, a.event.c_str(), a.severity.c_str(), a.urgency.c_str(),
-                  a.certainty.c_str(), match ? "-> SHOWING" : "(filtered out)");
+    Serial.printf("OEM item: event=\"%s\" headline=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" %s\n",
+                  a.event.c_str(), a.headline.c_str(), a.severity.c_str(),
+                  a.urgency.c_str(), a.certainty.c_str(),
+                  match ? "-> SHOWING" : (english ? "(filtered out)" : "(non-English, skipped)"));
 
     if (match) {
       g_oemAlert = a;
       break;  // feed is newest-first, so the first qualifying item wins
     }
   }
-  if (checked == 0) Serial.println("OEM: 0 items in RSS feed");
+  if (scanned == 0) Serial.println("OEM: 0 items in RSS feed");
+  else if (fetched == 0) Serial.printf("OEM: %d items, none English-titled\n", scanned);
 
   Serial.printf("OEM: %s\n", g_oemAlert.event.length() ? g_oemAlert.event.c_str() : "(none)");
   progEnd(g_oemAlert.event.length() ? '*' : '0');
@@ -1528,7 +1589,7 @@ void setup() {
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("FTRAIN +");
   showText("PLANES");
-  showText(" V 5.0");
+  showText(" V 5.2");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -1666,8 +1727,16 @@ void loop() {
       // weather alert, source tag then just the title
       showAlert("NWS", g_wxAlert.event);
 
-      // NYC OEM alert (only ever set when capIsHighUrgency() said yes)
-      showAlert("NYC OEM", g_oemAlert.event);
+      // NYC OEM alert (only ever set when capIsHighUrgency() said yes, and
+      // only from the English-language copy -- see oemIsEnglish()). Show
+      // headline, not event: OEM's CAP event is always the generic SAME code
+      // name "Civil Emergency Message" regardless of what's actually going
+      // on, unlike NWS where event is already specific ("Flood Watch" etc).
+      // headline is where OEM puts the actual "what" (e.g. "Basement
+      // Preparedness - 9/13", already stripped of its "Notify NYC - ...
+      // (NYC)" wrapper by oemCleanHeadline()). Fall back to event only if
+      // headline is somehow empty (malformed CAP doc).
+      showAlert("NYC OEM", g_oemAlert.headline.length() ? g_oemAlert.headline : g_oemAlert.event);
 
       // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
       if (g_quakeLine.length()) {

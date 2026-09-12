@@ -139,11 +139,32 @@ def _cap_doc_url(item: ET.Element):
     return None
 
 
-def fetch_cap_alerts(limit=20):
+def clean_title(title):
+    """Strip OEM's "Notify NYC - <title> (NYC)" wrapper down to just the
+    specific alert title, e.g. "Basement Preparedness - 9/13". This is exactly
+    what fetchOemAlert()'s oemCleanHeadline() does in src/main.cpp - the
+    device shows this cleaned string, not the raw CAP headline."""
+    title = title or ""
+    prefix = "Notify NYC - "
+    suffix = " (NYC)"
+    if title.startswith(prefix):
+        title = title[len(prefix):]
+    if title.endswith(suffix):
+        title = title[:-len(suffix)]
+    return title
+
+
+def fetch_cap_alerts(limit=20, english_only=True):
     """Query the live Everbridge CAP RSS feed, following each item out to its
     full CAP XML document for severity/urgency/certainty (not present inline -
     see module docstring and OASIS CAP v1.2:
-    https://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2-os.html)."""
+    https://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2-os.html).
+
+    OEM re-sends every alert once per language (senderName "NYCEM [English]",
+    "NYCEM [Spanish]", etc, all with identical severity/urgency/event, and
+    translations aren't reliably ordered relative to the English item in the
+    feed) - by default only the English copy is kept, matching oemIsEnglish()
+    in src/main.cpp, which is what the device actually displays."""
     resp = requests.get(CAP_RSS_URL, timeout=10)
     resp.raise_for_status()
     root = ET.fromstring(resp.content)
@@ -155,7 +176,8 @@ def fetch_cap_alerts(limit=20):
         pub_date = (item.findtext("pubDate") or "").strip()
         cap_url = _cap_doc_url(item)
 
-        info = {"title": title, "pubDate": pub_date, "cap_url": cap_url}
+        info = {"title": title, "title_clean": clean_title(title),
+                "pubDate": pub_date, "cap_url": cap_url}
 
         if cap_url:
             cap_resp = requests.get(cap_url, timeout=10)
@@ -168,6 +190,7 @@ def fetch_cap_alerts(limit=20):
                 qualified = "/".join(f"{{{CAP_NS}}}{part}" for part in path.split("/"))
                 return cap_root.findtext(f".//{qualified}")
 
+            info["sender_name"] = cap_find("info/senderName")
             info["event"] = cap_find("info/event")
             info["severity"] = cap_find("info/severity")
             info["urgency"] = cap_find("info/urgency")
@@ -176,6 +199,8 @@ def fetch_cap_alerts(limit=20):
             info["effective"] = cap_find("info/effective")
             info["expires"] = cap_find("info/expires")
 
+        if english_only and info.get("sender_name") != "NYCEM [English]":
+            continue
         alerts.append(info)
     return alerts
 
@@ -204,8 +229,9 @@ def main():
             print("No items in CAP feed right now (this is expected when NYC has no active alert).")
             return
         for a in alerts:
-            print(f"[{a.get('pubDate')}] {a.get('title')}")
+            print(f"[{a.get('pubDate')}] DEVICE SHOWS: {a.get('title_clean')}")
             if "severity" in a:
+                print(f"    raw title={a.get('title')!r}")
                 print(f"    event={a.get('event')} severity={a.get('severity')} "
                       f"urgency={a.get('urgency')} certainty={a.get('certainty')}")
                 print(f"    effective={a.get('effective')} expires={a.get('expires')}")

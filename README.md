@@ -21,6 +21,18 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
+ - version 5.2
+ - Sep 12, 2026
+ - NYC OEM alert now shows the alert's actual title instead of its CAP `event`
+   field, which for this feed is always the generic "Civil Emergency Message"
+   SAME code name no matter what's happening. The title is cleaned of OEM's
+   "Notify NYC - ... (NYC)" wrapper (e.g. `Basement Preparedness - 9/13`).
+   OEM re-sends every alert once per language, so only the English copy
+   (`senderName` = `NYCEM [English]`) is shown — translations are skipped via
+   a free check on the RSS item's own title before any CAP doc is fetched,
+   fixing a bug where a real active alert didn't display at all because its
+   12 translations happened to sort ahead of the English item within the old,
+   too-small item-scan limit.
  - version 5.1
  - Sep 12, 2026
  - Added a NYC OEM emergency alert feed (Notify NYC's live CAP feed), sharing
@@ -63,10 +75,14 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   feed, checked every 5 min. Unlike the NWS alert (which is already scoped to
   one point) this feed covers everything from a subway delay to a building
   collapse, so it's filtered by `capIsHighUrgency()` — a blinking `NYC OEM` tag
-  then the event name only show for alerts that aren't clearly low
-  severity/urgency (blank/unknown fields are shown, not hidden, so a real
-  emergency a warning specialist tagged in a hurry doesn't get silently
-  dropped). Nothing shown otherwise.
+  then the alert's title (not its CAP `event`, which for this feed is always
+  the generic "Civil Emergency Message" SAME code name; the title is cleaned
+  of OEM's "Notify NYC - ... (NYC)" wrapper, e.g. `Basement Preparedness -
+  9/13`) only shows for alerts that aren't clearly low severity/urgency
+  (blank/unknown fields are shown, not hidden, so a real emergency a warning
+  specialist tagged in a hurry doesn't get silently dropped). OEM re-sends
+  every alert once per language; only the English copy (`senderName` =
+  `NYCEM [English]`) is ever shown. Nothing shown otherwise.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
@@ -361,12 +377,18 @@ More pictures coming
   `features[]` = all clear.
 - **NYC emergency alerts**: [`feeds.everbridge.net/feeds/453003085617722/rss/rss.xml`](https://a858-nycnotify.nyc.gov/)
   — Notify NYC's live CAP feed (linked from their homepage footer), free, no
-  key. RSS `<item>`s don't carry severity/urgency themselves; each one's
-  `<enclosure>`/`<link>` points at a full CAP XML doc (OASIS CAP v1.2) that
-  does, so this is a two-hop fetch. We check the 5 most recent items and show
-  the newest whose `<severity>`/`<urgency>` aren't clearly low (`capIsHighUrgency()`
-  in `main.cpp`). See `tools/nyc_oem_test.py` for the full research trail — it
-  also covers the NYC Open Data Socrata dataset for this same feed
+  key. RSS `<item>`s don't carry severity/urgency (or language) themselves;
+  each one's `<enclosure>`/`<link>` points at a full CAP XML doc (OASIS CAP
+  v1.2) that does, so this is a two-hop fetch. OEM re-sends every alert once
+  per language, so we scan up to `OEM_MAX_RSS_ITEMS` (40) RSS items cheaply
+  (a free string check on each `<title>` — English items are titled
+  `"Notify NYC - ..."`, translations aren't) and only spend an actual CAP-doc
+  fetch, capped at `OEM_MAX_CAP_FETCHES` (6), on candidates that pass. The
+  first candidate whose CAP doc confirms `senderName` = `NYCEM [English]` and
+  whose `<severity>`/`<urgency>` aren't clearly low (`capIsHighUrgency()` in
+  `main.cpp`) wins; its `<headline>` (cleaned of the "Notify NYC - ... (NYC)"
+  wrapper) is what's shown. See `tools/nyc_oem_test.py` for the full research
+  trail — it also covers the NYC Open Data Socrata dataset for this same feed
   (`data.cityofnewyork.us/resource/8vv7-7wx3.json`), which was investigated
   first but turned out to have no severity field and to have stopped updating
   entirely as of 2025-09-15, so it's reference-only, not used by the device.
