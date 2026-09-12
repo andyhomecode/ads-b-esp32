@@ -24,18 +24,20 @@
 //
 // File layout (top to bottom): Config -> Hardware & globals -> Display / LED
 // rendering -> Time parsing -> Trains -> Lookups -> Planes -> Buses ->
-// Weather -> Quake -> WiFi & config portal -> Setup & loop. Each feed section
-// carries a fetchX() (pulls data into a cache) and a showX() (renders the
-// cache); the Display section is the only place that touches the LED
-// hardware directly.
+// Citi Bike -> Weather -> Quake -> ISS -> WiFi & config portal -> Setup &
+// loop. Each feed section carries a fetchX() (pulls data into a cache) and a
+// showX() (renders the cache); the Display section is the only place that
+// touches the LED hardware directly.
 
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <HTTPClient.h>
 #include <time.h>
 #include <string.h>  // strchr, for isoToEpoch
+#include <math.h>    // sinf/cosf/atan2f, for the ISS distance check
 
 // LED output
 #include <Wire.h>
@@ -81,7 +83,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/5.0 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/5.7 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
 // inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
@@ -152,6 +154,33 @@
 #define EQ_MAX_AGE_S    86400         // 24 h
 #define EQ_REFETCH_MS   600000        // 10 min
 
+// --- ISS overhead ping -----------------------------------------------------
+// wheretheiss.at is a free, no-key, single-satellite position API -- one
+// small JSON object, no filter needed. Deliberately not a real visible-pass
+// predictor (that needs sunlit-satellite/dark-observer math and an API like
+// open-notify.org's iss-pass, which has a history of flaky uptime); this is
+// just a "something's up there" ping like the plane tracker, straight-line
+// distance from home to the ISS's ground point, so it can flash in broad
+// daylight same as the middle of the night.
+#define ISS_URL         "https://api.wheretheiss.at/v1/satellites/25544"
+#define ISS_REFETCH_MS  20000         // it moves at ~7.7 km/s
+#define ISS_OVERHEAD_KM 400.0f        // "roughly overhead", not a real horizon calc
+#define HOME_LAT        40.7168f      // same point as WX_URL above
+#define HOME_LON       -73.9861f
+
+// --- NHC Atlantic tropical storms -------------------------------------------
+// NHC's "what's active right now" feed. Unlike Citi Bike this is small --
+// usually 0-1 storms worldwide, rarely more than a handful in-season -- so no
+// streaming hack needed, just an ArduinoJson filter to drop the GIS/advisory
+// sub-objects bundled into every storm entry that we don't use. Only Atlantic
+// systems count (`id` starts "al" -- Pacific storms don't threaten NYC), and
+// depressions are skipped (NHC hasn't named them yet). This is an ambient
+// "something's out there" ping like the Tokyo quake, not a warning -- NWS and
+// NYC OEM still own "it's about to hit you", once it's close enough for them
+// to say so.
+#define NHC_URL          "https://www.nhc.noaa.gov/CurrentStorms.json"
+#define NHC_REFETCH_MS   1800000      // 30 min -- advisories update every few hours
+
 // --- MTA BusTime (SIRI stop-monitoring) ----------------------------------
 // Upcoming buses at one or more stops. Needs BUSTIME_API_KEY from
 // include/secrets.h (free key: https://register.developer.obanyc.com/).
@@ -173,6 +202,26 @@ const BusFeed BUS_FEEDS[] = {
   { "404287", "M9",   "M9"  },  // Essex St/East Broadway, W -> Battery Pk City
 };
 #define NUM_BUS_FEEDS (sizeof(BUS_FEEDS) / sizeof(BUS_FEEDS[0]))
+
+// --- Citi Bike (GBFS) -----------------------------------------------------
+// Clinton St & Grand St got split into two docks at some point: the original
+// rack (capacity 54) and a smaller overflow rack added later right next to it
+// (short_name "5303.06_", capacity 15) -- both show up separately in GBFS, so
+// we track both station_ids and add them together.
+//
+// GBFS has no per-station query -- station_status.json is a single dump of
+// all ~2500 NYC stations (~1 MB). That's far too big to buffer into a String
+// or ArduinoJson doc on an ESP32-S3 without PSRAM, so fetchCitibike() streams
+// the HTTP response and hand-scans for our two station_id strings instead of
+// parsing JSON at all (same reasoning as xmlTag() below: flat text search
+// instead of pulling in more parsing machinery than the job needs).
+#define CITIBIKE_STATUS_URL "https://gbfs.citibikenyc.com/gbfs/en/station_status.json"
+#define CITIBIKE_REFETCH_MS 30000
+const char *CITIBIKE_STATION_IDS[] = {
+  "66dbc420-0aca-11e7-82f6-3863bb44ef7c",  // main rack, capacity 54
+  "2098714441479661752",                    // overflow rack, capacity 15
+};
+#define NUM_CITIBIKE_STATIONS (sizeof(CITIBIKE_STATION_IDS) / sizeof(CITIBIKE_STATION_IDS[0]))
 
 
 // _   _                _                          ____ _       _           _
@@ -1145,6 +1194,117 @@ void showBuses(long nowEpoch) {
 }
 
 
+//   ____ _ _   _  ____  _ _
+//  / ___(_) |_(_) __ )(_) | _____
+// | |   | | __| |  _ \| | |/ / _ \
+// | |___| | |_| | |_) | |   <  __/
+//  \____|_|\__|_|____/|_|_|\_\___|
+//
+// Bikes + docks available at the Clinton St & Grand St corner, summed across
+// its two station_ids (see CITIBIKE_STATION_IDS above). -1 means "no reading
+// yet" so showCitibike() can stay quiet on first boot instead of flashing 0s.
+
+long g_citibikeBikes = -1;
+long g_citibikeDocks = -1;
+
+// Finds "key"<:><spaces><digits> in `window` and returns the digits, or -1 if
+// `key` isn't there. Tolerant of the feed being minified or not -- it's a
+// public GBFS mirror, not a contract.
+long jsonIntAfterKey(const String &window, const char *key) {
+  int i = window.indexOf(String("\"") + key + "\"");
+  if (i < 0) return -1;
+  int colon = window.indexOf(':', i);
+  if (colon < 0) return -1;
+  int j = colon + 1;
+  while (j < (int)window.length() && window[j] == ' ') j++;
+  int start = j;
+  while (j < (int)window.length() && isDigit(window[j])) j++;
+  return (j == start) ? -1 : window.substring(start, j).toInt();
+}
+
+void fetchCitibike() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
+  http.begin(CITIBIKE_STATUS_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("CITIBIKE HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+
+  // Stream the body and hand-scan for our station_ids, rather than buffering
+  // the ~1 MB all-stations payload -- see the comment on CITIBIKE_STATUS_URL.
+  WiFiClient *stream = http.getStreamPtr();
+  bool found[NUM_CITIBIKE_STATIONS] = {false};
+  long bikes[NUM_CITIBIKE_STATIONS] = {0};
+  long docks[NUM_CITIBIKE_STATIONS] = {0};
+  size_t stillLooking = NUM_CITIBIKE_STATIONS;
+
+  String buf;
+  buf.reserve(1600);
+  char chunk[257];
+  unsigned long start = millis();
+  while (http.connected() && stillLooking > 0 && millis() - start < 10000) {
+    size_t avail = stream->available();
+    if (avail == 0) { delay(1); continue; }
+    if (avail > sizeof(chunk) - 1) avail = sizeof(chunk) - 1;
+    size_t got = stream->readBytes(chunk, avail);
+    chunk[got] = '\0';
+    buf += chunk;
+    if (buf.length() > 1400) buf.remove(0, buf.length() - 1400);  // keep a tail window
+
+    for (size_t i = 0; i < NUM_CITIBIKE_STATIONS; i++) {
+      if (found[i]) continue;
+      int p = buf.indexOf(CITIBIKE_STATION_IDS[i]);
+      if (p < 0) continue;
+      int windowEnd = p + 400;
+      if (windowEnd > (int)buf.length()) windowEnd = buf.length();
+      String window = buf.substring(p, windowEnd);
+      long ba = jsonIntAfterKey(window, "num_bikes_available");
+      long da = jsonIntAfterKey(window, "num_docks_available");
+      if (ba < 0 || da < 0) continue;  // fields not fully buffered yet -- retry next chunk
+      bikes[i] = ba;
+      docks[i] = da;
+      found[i] = true;
+      stillLooking--;
+    }
+  }
+  http.end();
+
+  if (stillLooking > 0) {
+    Serial.printf("CITIBIKE: only found %d/%d stations\n",
+                  (int)(NUM_CITIBIKE_STATIONS - stillLooking), (int)NUM_CITIBIKE_STATIONS);
+    progEnd('X');
+    return;  // keep the last known reading rather than show a partial total
+  }
+
+  g_citibikeBikes = 0;
+  g_citibikeDocks = 0;
+  for (size_t i = 0; i < NUM_CITIBIKE_STATIONS; i++) {
+    g_citibikeBikes += bikes[i];
+    g_citibikeDocks += docks[i];
+  }
+  Serial.printf("CITIBIKE: %ld bikes, %ld docks\n", g_citibikeBikes, g_citibikeDocks);
+  progEnd('*');
+}
+
+// Two frames, same cadence as a bus arrival: bike count then dock count.
+void showCitibike() {
+  if (g_citibikeBikes < 0) return;  // no reading yet
+  char frame[16];
+  snprintf(frame, sizeof(frame), "Citi %ldb", g_citibikeBikes);
+  showFrame(frame, 1300);
+  snprintf(frame, sizeof(frame), "Citi %ldd", g_citibikeDocks);
+  showFrame(frame, 1300);
+}
+
+
 //                    _   _
 //  __      ____ __  | | | |
 //  \ \ /\ / /\ \/ / | |_| |
@@ -1467,6 +1627,224 @@ void fetchQuake() {
 }
 
 
+//  ___ ____ ____
+// |_ _/ ___/ ___|
+//  | |\___ \___ \
+//  | | ___) |__) |
+// |___|____/____/
+//
+// Straight-line distance from home to the ISS's current ground point. See the
+// comment on ISS_URL above for why this isn't a real visible-pass predictor.
+
+bool g_issOverhead = false;
+
+float haversineKm(float lat1, float lon1, float lat2, float lon2) {
+  const float R = 6371.0f;  // km
+  float dLat = (lat2 - lat1) * DEG_TO_RAD;
+  float dLon = (lon2 - lon1) * DEG_TO_RAD;
+  float a = sinf(dLat / 2) * sinf(dLat / 2) +
+            cosf(lat1 * DEG_TO_RAD) * cosf(lat2 * DEG_TO_RAD) *
+                sinf(dLon / 2) * sinf(dLon / 2);
+  return R * 2 * atan2f(sqrtf(a), sqrtf(1 - a));
+}
+
+// Initial compass bearing from (lat1,lon1) to (lat2,lon2), 0-360.
+float bearingDeg(float lat1, float lon1, float lat2, float lon2) {
+  float phi1 = lat1 * DEG_TO_RAD, phi2 = lat2 * DEG_TO_RAD;
+  float dLon = (lon2 - lon1) * DEG_TO_RAD;
+  float y = sinf(dLon) * cosf(phi2);
+  float x = cosf(phi1) * sinf(phi2) - sinf(phi1) * cosf(phi2) * cosf(dLon);
+  float deg = atan2f(y, x) * RAD_TO_DEG;
+  if (deg < 0) deg += 360;
+  return deg;
+}
+
+// Nearest 8-point compass letter(s) for a bearing -- used by the hurricane
+// feed below, for both "which way is it from home" and "which way is it
+// heading".
+const char *compass8(float deg) {
+  static const char *pts[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+  int idx = ((int)((deg + 22.5f) / 45.0f)) % 8;
+  return pts[idx];
+}
+
+void fetchIss() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(4000);
+  http.begin(ISS_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("ISS HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("ISS JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  float lat = doc["latitude"]  | 0.0f;
+  float lon = doc["longitude"] | 0.0f;
+  float km  = haversineKm(HOME_LAT, HOME_LON, lat, lon);
+  g_issOverhead = km <= ISS_OVERHEAD_KM;
+  Serial.printf("ISS: %.0f km away%s\n", km, g_issOverhead ? " -- OVERHEAD" : "");
+  progEnd(g_issOverhead ? '*' : '0');
+}
+
+// One frame, same as a bus arrival -- shown only while it's actually overhead.
+void showIss() {
+  if (!g_issOverhead) return;
+  showFrame("ISS OVER", 1300);
+}
+
+
+//  _   _ _   _  ____
+// | \ | | | | |/ ___|
+// |  \| | |_| | |
+// | |\  |  _  | |___
+// |_| \_|_| |_|\____|
+//
+// The nearest active Atlantic named storm to home, if any. See the comment on
+// NHC_URL above for the basin/depression filtering.
+
+struct HurricaneInfo {
+  String name;
+  String classification;  // "TS", "HU", "PTC", "EX", ...
+  int    windKt = 0;
+  float  distanceMi = -1;
+  float  bearingFromHome = 0;   // which way it is from home
+  float  moveDir = 0;           // which way it's heading
+  int    moveSpeedMph = 0;
+  bool   valid = false;
+};
+HurricaneInfo g_hurricane;
+
+// Saffir-Simpson category from max sustained wind (knots); 0 = not
+// hurricane-strength.
+int hurricaneCategory(int windKt) {
+  if (windKt >= 137) return 5;
+  if (windKt >= 113) return 4;
+  if (windKt >= 96)  return 3;
+  if (windKt >= 83)  return 2;
+  if (windKt >= 64)  return 1;
+  return 0;
+}
+
+void fetchHurricane() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(6000);
+  http.begin(NHC_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("NHC HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  // Each storm entry also carries a pile of GIS/advisory sub-objects (track
+  // cones, KMZ links, ...) we have no use for -- filter down to the handful
+  // of scalar fields the display actually needs.
+  JsonDocument filter;
+  filter["activeStorms"][0]["id"]               = true;
+  filter["activeStorms"][0]["name"]             = true;
+  filter["activeStorms"][0]["classification"]   = true;
+  filter["activeStorms"][0]["intensity"]        = true;
+  filter["activeStorms"][0]["latitudeNumeric"]  = true;
+  filter["activeStorms"][0]["longitudeNumeric"] = true;
+  filter["activeStorms"][0]["movementDir"]      = true;
+  filter["activeStorms"][0]["movementSpeed"]    = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("NHC JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  g_hurricane = HurricaneInfo();  // clear -- stays invalid unless one qualifies below
+  float bestMi = -1;
+
+  for (JsonObject s : doc["activeStorms"].as<JsonArray>()) {
+    String id = String(s["id"] | "");
+    if (!id.startsWith("al")) continue;                 // Atlantic basin only
+
+    String cls = String(s["classification"] | "");
+    if (cls == "TD" || cls == "STD") continue;          // not named yet -- TS and up all show
+
+    float lat = s["latitudeNumeric"]  | 0.0f;
+    float lon = s["longitudeNumeric"] | 0.0f;
+    float mi  = haversineKm(HOME_LAT, HOME_LON, lat, lon) * 0.621371f;
+    if (bestMi >= 0 && mi >= bestMi) continue;          // keep only the nearest
+
+    bestMi = mi;
+    g_hurricane.valid           = true;
+    g_hurricane.name            = String(s["name"] | "");
+    g_hurricane.classification  = cls;
+    // NHC sends intensity as a JSON *string* ("50"), unlike the numeric
+    // fields above -- ArduinoJson's `| default` only returns the real value
+    // when is<T>() already matches the target type, so `s["intensity"] | 0`
+    // would silently always be 0 here. as<int>() does the string->int
+    // conversion `|` doesn't.
+    g_hurricane.windKt          = s["intensity"].as<int>();
+    g_hurricane.moveDir         = s["movementDir"]   | 0;
+    g_hurricane.moveSpeedMph    = s["movementSpeed"] | 0;  // NHC reports this in mph already
+    g_hurricane.distanceMi      = mi;
+    g_hurricane.bearingFromHome = bearingDeg(HOME_LAT, HOME_LON, lat, lon);
+  }
+
+  Serial.printf("NHC: %s\n", g_hurricane.valid
+      ? (g_hurricane.name + " " + String((int)g_hurricane.distanceMi) + "mi").c_str()
+      : "(none)");
+  progEnd(g_hurricane.valid ? '*' : '0');
+}
+
+// Five frames, same cadence as a bus arrival: a "NOAA NHC" header, name,
+// strength, distance + direction from home, then heading -- the last one is
+// what tells you whether it's actually coming this way or just passing
+// through the ocean.
+void showHurricane() {
+  if (!g_hurricane.valid) return;
+
+  showFrame("NOAA NHC", 1300);  // header frame, same idea as "E B'WAY" for trains
+  showFrame(g_hurricane.name, 1300);  // natural case; truncated to 8 cols if it runs long
+
+  char frame[16];
+  int cat = hurricaneCategory(g_hurricane.windKt);
+  if (cat > 0) {
+    snprintf(frame, sizeof(frame), "CAT %d", cat);
+  } else {
+    int mph = (int)(g_hurricane.windKt * 1.15078f);
+    snprintf(frame, sizeof(frame), "%s %dmph", g_hurricane.classification.c_str(), mph);
+  }
+  showFrame(frame, 1300);
+
+  snprintf(frame, sizeof(frame), "%dmi %s", (int)g_hurricane.distanceMi,
+           compass8(g_hurricane.bearingFromHome));
+  showFrame(frame, 1300);
+
+  snprintf(frame, sizeof(frame), "%s %dmph", compass8(g_hurricane.moveDir),
+           g_hurricane.moveSpeedMph);
+  showFrame(frame, 1300);
+}
+
+
 // __        ___ _____ _   ___         ____             __ _
 // \ \      / (_)  ___(_) / _ \ ___   / ___|___  _ __  / _(_) __ _
 //  \ \ /\ / /| | |_  | | | | / __| | |   / _ \| '_ \| |_| |/ _` |
@@ -1764,6 +2142,18 @@ void loop() {
       static RefetchTimer eqTimer;
       if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
 
+      // --- Citi Bike: refresh dock counts on its own clock ----------------
+      static RefetchTimer citibikeTimer;
+      if (citibikeTimer.due(CITIBIKE_REFETCH_MS)) fetchCitibike();
+
+      // --- ISS: check whether it's roughly overhead ------------------------
+      static RefetchTimer issTimer;
+      if (issTimer.due(ISS_REFETCH_MS)) fetchIss();
+
+      // --- NHC: check for a nearby Atlantic named storm --------------------
+      static RefetchTimer nhcTimer;
+      if (nhcTimer.due(NHC_REFETCH_MS)) fetchHurricane();
+
       // If we hit the network this pass, hold the finished bar a beat, then let
       // the first real frame scroll it away.
       if (progRan()) {
@@ -1826,7 +2216,14 @@ void loop() {
         // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
         showBuses(nowEpoch);
 
+        // ...then Citi Bike (Clinton St & Grand St), if we have a reading.
+        showCitibike();
 
+        // ...then the ISS, if it's roughly overhead.
+        showIss();
+
+        // ...then the nearest Atlantic named storm, if there is one.
+        showHurricane();
       }
 
     } else {

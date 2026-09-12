@@ -8,8 +8,11 @@ on dual 14-segment LED displays.
 And because the hardware started life as an LGA plane spotter: whenever there's an
 airliner low over Brooklyn on final into **LaGuardia**, the plane takes over the
 whole display — flight number, airline, origin airport, aircraft type — until it
-passes. It also shows nearby **bus** countdowns and the current **NWS weather
-alert** for the neighborhood — plus, because the author has people in Tokyo, a big-earthquake / tsunami check for Tokyo.
+passes. It also shows nearby **bus** and **Citi Bike** dock counts, the current
+**NWS weather alert** for the neighborhood, a fun ping when the **ISS** is
+overhead, the nearest active **Atlantic named storm** if there is one, and —
+because the author has people in Tokyo — a big-earthquake / tsunami check for
+Tokyo.
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
@@ -21,6 +24,35 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 [api.weather.gov](https://www.weather.gov/documentation/services-web-api).
 
 ## Version
+ - version 5.7
+ - Sep 12, 2026
+ - Added a **hurricane** feed: the nearest active Atlantic named storm (NHC's
+   `CurrentStorms.json`), cycling alongside the trains/buses/Citi Bike/ISS
+   like everything else — a `NOAA NHC` header frame, the storm's name in its
+   natural case, strength (`CAT 3` or `TS 60mph`), distance + compass
+   direction from home (`620mi SE`), and its own heading (`NW 12mph`, the cue
+   for whether it's actually coming this way). Only Atlantic systems count and
+   plain depressions are skipped (not named yet), but any named tropical storm
+   or hurricane shows. This is an ambient "something's out there" ping like
+   the Tokyo quake, not a warning — NWS and NYC OEM still own "it's about to
+   hit you." Verified against the real ArduinoJson library (not just a
+   reimplementation) that NHC sends `intensity` as a JSON *string* — `s["intensity"]
+   | 0` silently returns 0 for that reason, so `fetchHurricane()` uses
+   `.as<int>()` instead. Tested live on-device against a real active Pacific
+   storm with the basin filter temporarily relaxed before restoring it to
+   Atlantic-only.
+ - version 5.6
+ - Sep 12, 2026
+ - Added two feeds, cycling alongside the trains/buses like everything else
+   (fade + scroll transition, no special alert treatment): **Citi Bike** dock
+   counts at Clinton St & Grand St (`Citi 57b` / `Citi 6d`), and a fun **ISS
+   overhead** ping (`ISS OVER`) when the station's ground point is within
+   `ISS_OVERHEAD_KM` (400 km) of home — a straight-line distance check, not a
+   real sunlit/dark-sky visible-pass prediction. Citi Bike's `station_status.json`
+   is a ~1 MB all-NYC-stations dump with no per-station query, too big to
+   buffer or JSON-parse on an ESP32-S3 with no PSRAM, so `fetchCitibike()`
+   streams the HTTP response and hand-scans for the two station IDs instead —
+   see API Reference below.
  - version 5.5
  - Sep 12, 2026
  - NYC OEM alert's source tag now shows `OEM` plus its CAP `<category>`
@@ -127,14 +159,35 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
   TOMIOKA, JAPAN` (or `TSUNAMI ...`) — shown just like the weather alert. Checked
   every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
+- **Citi Bike**: bikes and docks available at Clinton St & Grand St, summed
+  across the two station IDs Citi Bike splits that corner into (a main rack
+  and a smaller overflow rack). Two frames, same cadence as a bus arrival:
+  `Citi 57b` then `Citi 6d`. Checked every 30s; nothing shown until the first
+  reading comes back.
+- **ISS overhead**: a fun ping — `ISS OVER` scrolls in, cycling alongside the
+  trains/buses/Citi Bike (no special alert treatment), when the ISS's current
+  ground point is within `ISS_OVERHEAD_KM` (400 km) of home. This is a
+  straight-line distance check, not a real naked-eye visible-pass prediction
+  (that needs sunlit-satellite/dark-observer math) — it'll ping just as
+  readily at noon as at night. Checked every 20s, since it moves at ~7.7 km/s.
+- **Hurricane**: the nearest active Atlantic named storm, if any, cycling in
+  five frames: `NOAA NHC` (header), the storm's name in its natural case,
+  strength (`CAT 3`, or `TS 60mph` below hurricane strength), distance +
+  compass direction from home (`620mi SE`), and its own heading (`NW 12mph`).
+  Only the Atlantic basin counts and plain depressions are skipped (not named
+  yet) — any tropical storm or stronger shows. This is an ambient "something's
+  out there" ping like the Tokyo quake, not a warning; NWS and NYC OEM already
+  cover "it's about to hit you" once NHC issues an actual watch/warning.
+  Checked every 30 min. Nothing shown when no Atlantic system is active.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
   8 columns).
 - **Decoupled fetch**: each source (trains ~30s, adsb.lol ~20s, buses ~30s,
-  weather ~5min, NYC OEM ~5min) polls on its own clock and the display loops
-  off the caches between fetches. A failed or empty fetch just leaves that
-  block's last data (or nothing) — the other blocks are unaffected.
+  weather ~5min, NYC OEM ~5min, Citi Bike ~30s, ISS ~20s, NHC ~30min) polls on
+  its own clock and the display loops off the caches between fetches. A
+  failed or empty fetch just leaves that block's last data (or nothing) — the
+  other blocks are unaffected.
 - **Fetch progress bar**: the HTTP calls block the loop, so while a fetch cycle
   runs the display becomes a dim left-to-right bar — one column per call. When a
   call starts, a `-` with its **decimal point lit** ("working"); when it returns
@@ -447,6 +500,42 @@ More pictures coming
   (`data.cityofnewyork.us/resource/8vv7-7wx3.json`), which was investigated
   first but turned out to have no severity field and to have stopped updating
   entirely as of 2025-09-15, so it's reference-only, not used by the device.
+- **Citi Bike docks**: [`gbfs.citibikenyc.com/gbfs/en/station_status.json`](https://gbfs.citibikenyc.com/gbfs/gbfs.json)
+  — the standard GBFS feed, free, no key. It has no per-station query, so this
+  is always the full ~2500-station NYC dump (~1 MB) — far too big to buffer
+  into a `String` or an ArduinoJson doc on an ESP32-S3 with no PSRAM (320 KB
+  RAM total). `fetchCitibike()` instead streams the HTTP response through a
+  small rolling buffer and hand-scans it for our two station IDs' `num_bikes_available`
+  / `num_docks_available` fields — no JSON parsing at all, closing the
+  connection once both are found. Clinton St & Grand St is actually two
+  station IDs (Citi Bike split it into a main rack and a smaller overflow rack
+  at some point); both are tracked and summed.
+- **ISS position**: [`api.wheretheiss.at/v1/satellites/25544`](https://wheretheiss.at/w/developer)
+  — free, no key, one small JSON object (`latitude`, `longitude`, ...). We
+  haversine the distance from home to the ISS's `{latitude,longitude}` and
+  flag "overhead" under `ISS_OVERHEAD_KM`. Deliberately not open-notify.org's
+  `iss-pass` endpoint (a real visible-pass predictor with day/night and
+  elevation-angle math) — that API has a history of flaky uptime, and this
+  feed is a fun "something's up there" ping, not a real stargazing tool.
+- **Hurricanes**: [`www.nhc.noaa.gov/CurrentStorms.json`](https://www.nhc.noaa.gov/gis/)
+  — free, no key. Usually 0-1 active storms worldwide, rarely more than a
+  handful in-season, so unlike Citi Bike this is small enough to filter and
+  parse normally (an ArduinoJson `Filter` drops the GIS/advisory sub-objects
+  bundled into every storm entry). `id` gives the basin (`al` = Atlantic);
+  `classification` is `TD`/`STD`/`TS`/`STS`/`HU`/`EX`/`PTC`, and only
+  depressions are skipped. **`intensity` (max sustained wind) arrives as a
+  JSON string** (`"50"`), unlike `movementDir`/`movementSpeed`/
+  `latitudeNumeric`/`longitudeNumeric`, which are real JSON numbers —
+  confirmed by compiling the actual ArduinoJson header this project uses and
+  testing both against real field shapes from the live feed:
+  `s["intensity"] | 0` silently evaluates to `0` (the `|` fallback only
+  converts when `is<T>()` already matches; it doesn't parse a string into a
+  number), so `fetchHurricane()` uses `s["intensity"].as<int>()` instead,
+  which does. Distance/bearing from home use the same haversine/bearing math
+  as the ISS check. `movementDir`/`movementSpeed` are the storm's own
+  heading/forward-speed, already in degrees/mph — no unit conversion needed
+  (verified against a live public advisory's plain-text "MOVING ... AT 10
+  MPH" wording, which matched the JSON field exactly).
 
 ### NYC OEM alert categories
 
