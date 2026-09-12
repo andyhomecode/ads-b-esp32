@@ -1,114 +1,15 @@
-# F @ East Broadway  (+ planes)
+# BS info box for my living room
 
-I can't see the subway from my window, but I still want to know when to leave for
-it. This device shows a live countdown to the next **F trains — both directions,
-uptown and downtown** — at the **East Broadway** station on the Lower East Side,
-on dual 14-segment LED displays.
+I need more dumb toys in my house, so I made this thing which displays planes I can see out the window,
+subway and bus times for the area, NWS weather and NYC emergency alerts, hurricanes in the atlantic basin,
+if the international space station is overhead (for now), weather conditions and forecasts, and other useless BS.
 
-And because the hardware started life as an LGA plane spotter: whenever there's an
-airliner low over Brooklyn on final into **LaGuardia**, the plane takes over the
-whole display — flight number, airline, origin airport, aircraft type — until it
-passes. It also shows nearby **bus** and **Citi Bike** dock counts, the current
-**NWS weather alert** for the neighborhood, a fun ping when the **ISS** is
-overhead, the nearest active **Atlantic named storm** if there is one, and —
-because the author has people in Tokyo — a big-earthquake / tsunami check for
-Tokyo.
+Waaaay too much info to be useful on a 8-character display, but why not.
+
+![so professional in the case and everything](cased.jpeg)
 
 ![She may not look like much, but she's got it where it counts, kid.](photo.jpeg)
 
-It's an ESP32-based device that pulls real-time arrival data from the MTA's
-GTFS-realtime feed (via the [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/)
-JSON proxy, so no protobuf parsing on the microcontroller) and cycles through
-the minutes-to-arrival for the next few trains each way, plus plane data from
-[adsb.lol](https://adsb.lol/) and weather alerts from
-[api.weather.gov](https://www.weather.gov/documentation/services-web-api).
-
-## Version
- - version 5.7
- - Sep 12, 2026
- - Added a **hurricane** feed: the nearest active Atlantic named storm (NHC's
-   `CurrentStorms.json`), cycling alongside the trains/buses/Citi Bike/ISS
-   like everything else — a `NOAA NHC` header frame, the storm's name in its
-   natural case, strength (`CAT 3` or `TS 60mph`), distance + compass
-   direction from home (`620mi SE`), and its own heading (`NW 12mph`, the cue
-   for whether it's actually coming this way). Only Atlantic systems count and
-   plain depressions are skipped (not named yet), but any named tropical storm
-   or hurricane shows. This is an ambient "something's out there" ping like
-   the Tokyo quake, not a warning — NWS and NYC OEM still own "it's about to
-   hit you." Verified against the real ArduinoJson library (not just a
-   reimplementation) that NHC sends `intensity` as a JSON *string* — `s["intensity"]
-   | 0` silently returns 0 for that reason, so `fetchHurricane()` uses
-   `.as<int>()` instead. Tested live on-device against a real active Pacific
-   storm with the basin filter temporarily relaxed before restoring it to
-   Atlantic-only.
- - version 5.6
- - Sep 12, 2026
- - Added two feeds, cycling alongside the trains/buses like everything else
-   (fade + scroll transition, no special alert treatment): **Citi Bike** dock
-   counts at Clinton St & Grand St (`Citi 57b` / `Citi 6d`), and a fun **ISS
-   overhead** ping (`ISS OVER`) when the station's ground point is within
-   `ISS_OVERHEAD_KM` (400 km) of home — a straight-line distance check, not a
-   real sunlit/dark-sky visible-pass prediction. Citi Bike's `station_status.json`
-   is a ~1 MB all-NYC-stations dump with no per-station query, too big to
-   buffer or JSON-parse on an ESP32-S3 with no PSRAM, so `fetchCitibike()`
-   streams the HTTP response and hand-scans for the two station IDs instead —
-   see API Reference below.
- - version 5.5
- - Sep 12, 2026
- - NYC OEM alert's source tag now shows `OEM` plus its CAP `<category>`
-   (e.g. `OEM GEO`) instead of a bare `NYC OEM`, since category is what
-   decides whether an OEM alert qualifies at all as of 5.4 — showing it
-   makes it obvious at a glance which bucket the alert fell into.
- - version 5.4
- - Sep 12, 2026
- - Fixed a bug where the NYC OEM alert could go blank even with a real active
-   alert in the feed: the cheap "does this title look English" pre-filter
-   (`oemTitleLooksEnglish()`) assumed only English items carry the
-   `"Notify NYC - ..."` prefix, but a live "Public Pool Closure" alert's
-   Yiddish/Urdu/Spanish/Russian/Polish/Korean translations all carried that
-   same prefix too — six of them in a row burned through
-   `OEM_MAX_CAP_FETCHES` before the real English item was ever reached. Now
-   also requires the title to be plain ASCII, which real English titles are
-   and nearly every translation isn't.
- - Also added a `<category>` check to `capIsHighUrgency()`: a "Public Pool
-   Closure" alert and a real "Basement Preparedness" flood-prep alert both
-   had identical severity=Severe/urgency=Immediate (NYC's Everbridge setup
-   tags almost everything that way), so severity/urgency alone couldn't tell
-   a routine notice from a real one — but CAP `<category>` could (`Health`
-   vs. `Geo`). `category == "Health"` is now excluded, same fails-open
-   denylist style as severity/urgency. See "NYC OEM alert categories" under
-   API Reference for the full CAP category table and why this is a denylist
-   rather than an allowlist.
- - version 5.3
- - Sep 12, 2026
- - Plane spotter now filters out JFK-bound aircraft that were sneaking into
-   the "LGA final" display. Geometry alone (bounding box + altitude) can't
-   reliably tell LGA and JFK finals apart over Brooklyn — they can share the
-   same approach heading depending on the day's runway configuration — so the
-   existing adsb.lol `routeset` lookup (already used for the origin airport)
-   is now also used to confirm the destination: a plane whose route plausibly
-   resolves to somewhere other than LGA is hidden instead of shown with a
-   blank origin. A route lookup that fails or is inconclusive still shows the
-   plane as before (fails open, same as the OEM alert severity filter).
- - version 5.2
- - Sep 12, 2026
- - NYC OEM alert now shows the alert's actual title instead of its CAP `event`
-   field, which for this feed is always the generic "Civil Emergency Message"
-   SAME code name no matter what's happening. The title is cleaned of OEM's
-   "Notify NYC - ... (NYC)" wrapper (e.g. `Basement Preparedness - 9/13`).
-   OEM re-sends every alert once per language, so only the English copy
-   (`senderName` = `NYCEM [English]`) is shown — translations are skipped via
-   a free check on the RSS item's own title before any CAP doc is fetched,
-   fixing a bug where a real active alert didn't display at all because its
-   12 translations happened to sort ahead of the English item within the old,
-   too-small item-scan limit.
- - version 5.1
- - Sep 12, 2026
- - Added a NYC OEM emergency alert feed (Notify NYC's live CAP feed), sharing
-   a `CapAlert`/`capIsHighUrgency()` severity-urgency threshold with the NWS
-   weather alert so both only interrupt the display for genuinely high-urgency
-   events. Each alert now blinks its source tag (`NWS` / `NYC OEM`) before the
-   event name.
 
 ## Features
 
@@ -179,6 +80,15 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
   out there" ping like the Tokyo quake, not a warning; NWS and NYC OEM already
   cover "it's about to hit you" once NHC issues an actual watch/warning.
   Checked every 30 min. Nothing shown when no Atlantic system is active.
+- **Current conditions + short forecast**: a `WX Now` header, then temp
+  (`Temp 72F`), feels-like (`Feel 70F`, only shown when it actually differs),
+  and dew point (`Dew 61F`) as short frames, then the conditions and the next
+  two forecast periods (NWS's own period names, e.g. `Tonight`) as scrolling
+  text — natural-language conditions text is variable-length, so it scrolls
+  instead of getting cut off at 8 columns. Common NWS wording is shortened
+  (`Thunderstorms` → `T-storms`, `Chance` → `Chc`, etc.) but kept in natural
+  mixed case, not shouted in all-caps. Current conditions checked every 10
+  min, forecast every 30 min.
 - **Fade + scroll transitions**: each frame dims, scrolls the old data out to
   the left while the new data scrolls in from the right, then fades back up to
   full brightness. Plane details scroll horizontally (they're longer than the
@@ -207,26 +117,12 @@ the minutes-to-arrival for the next few trains each way, plus plane data from
 
 ![LGA approach over Brooklyn: the bounding disc, the approach path, and the plane inside it](LGA-approach.png)
 
-Every `ADSB_REFETCH_MS` it asks [adsb.lol](https://adsb.lol/) for aircraft within
-`ADSB_RADIUS_NM` nautical miles of `ADSB_LAT,ADSB_LON` — roughly the grey disc
-above. adsb.lol has no free bounding-box query, and that disc reaches the Hudson
-corridor west of Manhattan, so the results are then clipped to a lat/lon box
-over Brooklyn (`BBOX_LAT_MIN/MAX`, `BBOX_LON_MIN/MAX` — Greenpoint down to
-Green-Wood, the East River across to East New York). Of what's left in the box it
-keeps only `A3` (airliner-sized) traffic between `ADSB_ALT_MIN` and
-`ADSB_ALT_MAX` feet — jets actually on final, not high overflights or little
-planes — and shows the one with the **highest latitude** (northern-most =
-closest to touchdown at LGA, the plane icon above).
-
-That box and altitude band also catches JFK finals over the same stretch of
-Brooklyn, and JFK/LGA approaches can share the same heading depending on the
-day's runway configuration, so geometry can't fully separate them. The
-destination is confirmed instead: the same `routeset` lookup used for the
-origin airport (see [Plane routes](#api-reference) below) is checked for LGA,
-and a plane whose route plausibly resolves to somewhere else (e.g. JFK) is
-hidden rather than shown with a blank origin. An inconclusive lookup (network
-hiccup, unresolvable callsign) still shows the plane — same fails-open
-philosophy as the NWS/NYC OEM alert severity filter.
+Polls adsb.lol for aircraft in a disc over Brooklyn, keeps only airliner-sized
+traffic in the LGA approach altitude band, and shows the northern-most one
+(closest to touchdown). A `routeset` lookup confirms it's actually LGA-bound
+(not JFK, which shares the same airspace/altitude) before showing it — an
+inconclusive lookup still shows the plane rather than hiding it. See
+[Plane positions / Plane routes](#api-reference) for the endpoint details.
 
 ## Hardware
 
@@ -457,8 +353,12 @@ More pictures coming
   — free, no key, but **requires a non-generic `User-Agent` with contact info**
   (else `403`). Returns an `ac[]` array; we keep `category == "A3"` in the
   altitude band and inside the Brooklyn box, then take the highest `lat`.
-- **Plane routes**: `POST api.adsb.lol/api/0/routeset` — the same lookup the
-  adsb.lol web GUI uses. Body `{"planes":[{"callsign","lat","lng"}]}`; returns
+- **Plane routes**: [`POST api.adsb.lol/api/0/routeset`](https://api.adsb.lol/docs)
+  — the same lookup the adsb.lol web GUI uses; it's listed in that Swagger doc
+  under `/api/0/routeset` (the docs page itself is a JS-rendered Swagger UI, so
+  a plain `curl` of it looks empty — the actual spec is at
+  [`/api/openapi.json`](https://api.adsb.lol/api/openapi.json)). Body
+  `{"planes":[{"callsign","lat","lng"}]}`; returns
   `_airports[]` + a `plausible` flag, and is position-aware so it resolves the
   right leg of a multi-stop route. **Only answers if the request carries a
   `Referer` from an `adsb.lol` origin** — otherwise an empty `201` (which is why
@@ -501,7 +401,10 @@ More pictures coming
   first but turned out to have no severity field and to have stopped updating
   entirely as of 2025-09-15, so it's reference-only, not used by the device.
 - **Citi Bike docks**: [`gbfs.citibikenyc.com/gbfs/en/station_status.json`](https://gbfs.citibikenyc.com/gbfs/gbfs.json)
-  — the standard GBFS feed, free, no key. It has no per-station query, so this
+  — the standard [GBFS spec](https://github.com/MobilityData/gbfs) (General
+  Bikeshare Feed Specification), free, no key; the link above is Citi Bike's
+  own discovery feed listing all its GBFS endpoints. It has no per-station
+  query, so this
   is always the full ~2500-station NYC dump (~1 MB) — far too big to buffer
   into a `String` or an ArduinoJson doc on an ESP32-S3 with no PSRAM (320 KB
   RAM total). `fetchCitibike()` instead streams the HTTP response through a
@@ -517,8 +420,12 @@ More pictures coming
   `iss-pass` endpoint (a real visible-pass predictor with day/night and
   elevation-angle math) — that API has a history of flaky uptime, and this
   feed is a fun "something's up there" ping, not a real stargazing tool.
-- **Hurricanes**: [`www.nhc.noaa.gov/CurrentStorms.json`](https://www.nhc.noaa.gov/gis/)
-  — free, no key. Usually 0-1 active storms worldwide, rarely more than a
+- **Hurricanes**: [`www.nhc.noaa.gov/CurrentStorms.json`](https://www.nhc.noaa.gov/CurrentStorms.json)
+  — free, no key, but **no formal API docs**: NHC's own site JS uses this
+  endpoint, it's not a published/versioned API like the others here, so there's
+  no spec page to link — [nhc.noaa.gov/gis/](https://www.nhc.noaa.gov/gis/) is
+  the closest thing (NHC's general GIS/data products page) but doesn't
+  document this specific endpoint. Usually 0-1 active storms worldwide, rarely more than a
   handful in-season, so unlike Citi Bike this is small enough to filter and
   parse normally (an ArduinoJson `Filter` drops the GIS/advisory sub-objects
   bundled into every storm entry). `id` gives the basin (`al` = Atlantic);
@@ -536,6 +443,32 @@ More pictures coming
   heading/forward-speed, already in degrees/mph — no unit conversion needed
   (verified against a live public advisory's plain-text "MOVING ... AT 10
   MPH" wording, which matched the JSON field exactly).
+- **Current conditions**: [`api.weather.gov/stations/KNYC/observations/latest`](https://www.weather.gov/documentation/services-web-api)
+  — same host/docs as the weather alert above, free, no key. `KNYC` (Central
+  Park) is the nearest observation station to home; found by hand via
+  [`api.weather.gov/points/{lat},{lon}`](https://www.weather.gov/documentation/services-web-api),
+  which returns an `observationStations` list — that discovery hop is done
+  once at dev time, not on the device, same as `EQ_URL`'s hardcoded Tokyo
+  coordinates. `properties.temperature`/`dewpoint`/`heatIndex`/`windChill` are
+  real JSON numbers in **Celsius**, converted to °F in `cToF()`; `heatIndex`/
+  `windChill` are `null` when conditions don't call for them, so "feels like"
+  falls back to actual temp (and isn't shown at all unless it differs by
+  ≥3°F). `textDescription` is the plain-language conditions string.
+- **Short forecast**: [`api.weather.gov/gridpoints/OKX/34,42/forecast`](https://www.weather.gov/documentation/services-web-api)
+  — same host/docs, also found via the one-time `/points/` lookup above
+  (`OKX/34,42` is the forecast gridpoint for home). `properties.periods[]` is
+  already relative to *now*, not fixed daily slots — checking at 11pm can mean
+  `periods[0].name` is already `"Tonight"` — so the display shows NWS's own
+  period name rather than assuming "today/tonight/tomorrow". `temperature` here
+  is already in **°F** (unlike the Celsius observations above), so no
+  conversion needed; only `name`/`shortForecast` are used. `shortForecast`
+  strings get run through `abbreviateForecast()`'s word-substitution table
+  (`Thunderstorms`→`T-storms`, `Chance`→`Chc`, etc.) before display.
+- **Clock**: `configTime()` against [`pool.ntp.org`](https://www.ntppool.org/en/)
+  and [`time.nist.gov`](https://tf.nist.gov/tf-cgi/servers.cgi) — not a feed,
+  but every feed's "how many minutes until" math and the earthquake/OEM age
+  windows depend on having a real clock. Falls back to the train feed's own
+  `updated` timestamp if NTP hasn't synced yet.
 
 ### NYC OEM alert categories
 
@@ -584,12 +517,116 @@ This project is open-source. See the original repository for licensing details.
 
 Feel free to submit issues or pull requests for improvements!
 
+## Version
+ - version 5.8
+ - Sep 12, 2026
+ - Added a **current conditions + short forecast** feed from NWS: `WX Now`
+   header, temp/feels-like (only shown when it actually differs)/dew point as
+   short frames, then conditions and the next `WXFC_PERIODS` (2) forecast
+   periods as scrolling text — natural-language conditions text is
+   variable-length, so (unlike the other new feeds) it scrolls rather than
+   getting silently truncated at 8 columns. Common NWS wording gets shortened
+   via `abbreviateForecast()` (`Thunderstorms`→`T-storms`, etc.) in mixed
+   case, not forced uppercase — confirmed via the LED font table that `F`/`f`
+   is the only letter in the whole alphabet that renders as an identical
+   glyph on this display, so that one letter can look "shouted" even in
+   properly-cased text; every other letter renders distinctly.
+ - version 5.7
+ - Sep 12, 2026
+ - Added a **hurricane** feed: the nearest active Atlantic named storm (NHC's
+   `CurrentStorms.json`), cycling alongside the trains/buses/Citi Bike/ISS
+   like everything else — a `NOAA NHC` header frame, the storm's name in its
+   natural case, strength (`CAT 3` or `TS 60mph`), distance + compass
+   direction from home (`620mi SE`), and its own heading (`NW 12mph`, the cue
+   for whether it's actually coming this way). Only Atlantic systems count and
+   plain depressions are skipped (not named yet), but any named tropical storm
+   or hurricane shows. This is an ambient "something's out there" ping like
+   the Tokyo quake, not a warning — NWS and NYC OEM still own "it's about to
+   hit you." Verified against the real ArduinoJson library (not just a
+   reimplementation) that NHC sends `intensity` as a JSON *string* — `s["intensity"]
+   | 0` silently returns 0 for that reason, so `fetchHurricane()` uses
+   `.as<int>()` instead. Tested live on-device against a real active Pacific
+   storm with the basin filter temporarily relaxed before restoring it to
+   Atlantic-only.
+ - version 5.6
+ - Sep 12, 2026
+ - Added two feeds, cycling alongside the trains/buses like everything else
+   (fade + scroll transition, no special alert treatment): **Citi Bike** dock
+   counts at Clinton St & Grand St (`Citi 57b` / `Citi 6d`), and a fun **ISS
+   overhead** ping (`ISS OVER`) when the station's ground point is within
+   `ISS_OVERHEAD_KM` (400 km) of home — a straight-line distance check, not a
+   real sunlit/dark-sky visible-pass prediction. Citi Bike's `station_status.json`
+   is a ~1 MB all-NYC-stations dump with no per-station query, too big to
+   buffer or JSON-parse on an ESP32-S3 with no PSRAM, so `fetchCitibike()`
+   streams the HTTP response and hand-scans for the two station IDs instead —
+   see API Reference below.
+ - version 5.5
+ - Sep 12, 2026
+ - NYC OEM alert's source tag now shows `OEM` plus its CAP `<category>`
+   (e.g. `OEM GEO`) instead of a bare `NYC OEM`, since category is what
+   decides whether an OEM alert qualifies at all as of 5.4 — showing it
+   makes it obvious at a glance which bucket the alert fell into.
+ - version 5.4
+ - Sep 12, 2026
+ - Fixed a bug where the NYC OEM alert could go blank even with a real active
+   alert in the feed: the cheap "does this title look English" pre-filter
+   (`oemTitleLooksEnglish()`) assumed only English items carry the
+   `"Notify NYC - ..."` prefix, but a live "Public Pool Closure" alert's
+   Yiddish/Urdu/Spanish/Russian/Polish/Korean translations all carried that
+   same prefix too — six of them in a row burned through
+   `OEM_MAX_CAP_FETCHES` before the real English item was ever reached. Now
+   also requires the title to be plain ASCII, which real English titles are
+   and nearly every translation isn't.
+ - Also added a `<category>` check to `capIsHighUrgency()`: a "Public Pool
+   Closure" alert and a real "Basement Preparedness" flood-prep alert both
+   had identical severity=Severe/urgency=Immediate (NYC's Everbridge setup
+   tags almost everything that way), so severity/urgency alone couldn't tell
+   a routine notice from a real one — but CAP `<category>` could (`Health`
+   vs. `Geo`). `category == "Health"` is now excluded, same fails-open
+   denylist style as severity/urgency. See "NYC OEM alert categories" under
+   API Reference for the full CAP category table and why this is a denylist
+   rather than an allowlist.
+ - version 5.3
+ - Sep 12, 2026
+ - Plane spotter now filters out JFK-bound aircraft that were sneaking into
+   the "LGA final" display. Geometry alone (bounding box + altitude) can't
+   reliably tell LGA and JFK finals apart over Brooklyn — they can share the
+   same approach heading depending on the day's runway configuration — so the
+   existing adsb.lol `routeset` lookup (already used for the origin airport)
+   is now also used to confirm the destination: a plane whose route plausibly
+   resolves to somewhere other than LGA is hidden instead of shown with a
+   blank origin. A route lookup that fails or is inconclusive still shows the
+   plane as before (fails open, same as the OEM alert severity filter).
+ - version 5.2
+ - Sep 12, 2026
+ - NYC OEM alert now shows the alert's actual title instead of its CAP `event`
+   field, which for this feed is always the generic "Civil Emergency Message"
+   SAME code name no matter what's happening. The title is cleaned of OEM's
+   "Notify NYC - ... (NYC)" wrapper (e.g. `Basement Preparedness - 9/13`).
+   OEM re-sends every alert once per language, so only the English copy
+   (`senderName` = `NYCEM [English]`) is shown — translations are skipped via
+   a free check on the RSS item's own title before any CAP doc is fetched,
+   fixing a bug where a real active alert didn't display at all because its
+   12 translations happened to sort ahead of the English item within the old,
+   too-small item-scan limit.
+ - version 5.1
+ - Sep 12, 2026
+ - Added a NYC OEM emergency alert feed (Notify NYC's live CAP feed), sharing
+   a `CapAlert`/`capIsHighUrgency()` severity-urgency threshold with the NWS
+   weather alert so both only interrupt the display for genuinely high-urgency
+   events. Each alert now blinks its source tag (`NWS` / `NYC OEM`) before the
+   event name.
+
 ## Credits
 
 - Train arrivals via [wheresthefuckingtrain.com](https://wheresthefuckingtrain.com/) proxying the MTA GTFS-realtime feed.
 - Bus arrivals via [MTA BusTime](https://bustime.mta.info/) (SIRI).
 - Plane positions and routes via [adsb.lol](https://adsb.lol/); airline names from a small built-in table.
-- Weather alerts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
+- Weather alerts, current conditions, and forecasts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
+- NYC emergency alerts via [Notify NYC](https://a858-nycnotify.nyc.gov/) (NYC Office of Emergency Management).
 - Earthquakes via the [USGS FDSN event API](https://earthquake.usgs.gov/fdsnws/event/1/).
+- Citi Bike dock counts via the [GBFS](https://github.com/MobilityData/gbfs) feed.
+- ISS position via [wheretheiss.at](https://wheretheiss.at/w/developer).
+- Hurricane tracking via the [National Hurricane Center](https://www.nhc.noaa.gov/).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.

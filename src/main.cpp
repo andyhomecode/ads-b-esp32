@@ -83,7 +83,7 @@
 // User-Agent ("User-Agent too generic; include valid contact info.") -- that is
 // exactly what killed the original plane-spotter build on the device -- so every
 // request below sends a real UA with contact info.
-#define USER_AGENT      "ads-b-esp32/5.7 (+https://github.com/andyhomecode/ads-b-esp32)"
+#define USER_AGENT      "ads-b-esp32/5.8 (+https://github.com/andyhomecode/ads-b-esp32)"
 
 // We fetch a disc (adsb.lol has no free bbox endpoint), then keep only aircraft
 // inside a lat/lon box over Brooklyn -- the disc alone reaches the Hudson
@@ -119,6 +119,19 @@
 // one is just grid metadata and has no alerts).
 #define WX_URL          "https://api.weather.gov/alerts/active?point=40.7168,-73.9861"
 #define WX_REFETCH_MS   300000        // 5 min -- alerts don't churn
+
+// --- NWS current conditions + short forecast --------------------------------
+// Two more api.weather.gov endpoints, same host as the alert feed above, but
+// each needs a one-time /points/{lat},{lon} lookup to resolve -- already done
+// by hand for our point: KNYC (Central Park) is the nearest observation
+// station, and OKX/34,42 is the forecast gridpoint -- so both URLs below are
+// hardcoded rather than re-resolved on every boot, same as EQ_URL's Tokyo
+// coordinates or the Citi Bike station IDs.
+#define WXNOW_URL        "https://api.weather.gov/stations/KNYC/observations/latest"
+#define WXNOW_REFETCH_MS 600000       // 10 min -- NWS observations update ~hourly
+#define WXFC_URL         "https://api.weather.gov/gridpoints/OKX/34,42/forecast"
+#define WXFC_REFETCH_MS  1800000      // 30 min -- forecast text doesn't change that often
+#define WXFC_PERIODS     2            // how many forecast periods to show
 
 // --- NYC OEM emergency alerts (Notify NYC / Everbridge CAP feed) -----------
 // The live feed linked from the Notify NYC homepage footer -- a genuine CAP
@@ -1366,6 +1379,211 @@ void fetchWeatherAlert() {
 }
 
 
+//__        ____  __       _   _ _____        __
+//\ \      / /\ \/ /  _ __ | \ | |  _ \\ \    / /
+// \ \ /\ / /  \  /  | '_ \|  \| | | | \ \ /\ / /
+//  \ V  V /   /  \  | | | | |\  | |_| |\ V  V /
+//   \_/\_/   /_/\_\ |_| |_|_| \_|____/  \_/\_/
+//
+// Current conditions (KNYC / Central Park) and the first WXFC_PERIODS periods
+// of the gridpoint forecast, cycling alongside the trains/buses like Citi
+// Bike/ISS/hurricane -- no alert treatment, this is just weather.
+
+float cToF(float c) { return c * 9.0f / 5.0f + 32.0f; }
+
+// Common NWS shortForecast words -> compact abbreviations, applied in order.
+// Whatever's left after that still gets truncated to 8 cols like anything
+// else that runs long here -- a compound forecast like "Partly Cloudy then
+// Chance Rain Showers" won't fully fit either way, abbreviated or not.
+struct WxAbbrev { const char *word; const char *abbr; };
+const WxAbbrev WX_ABBREVS[] = {
+  {"Thunderstorms", "T-storms"},  // the common shorthand -- already mixed case
+  {"Chance",        "Chc"},
+  {"Slight",        "Slgt"},
+  {"Likely",        "Lkly"},
+  {"Isolated",      "Isol"},
+  {"Scattered",     "Sct"},
+  {"Widespread",    "Wide"},
+  {"Mostly",        "Most"},
+  {"Partly",        "Ptly"},
+  {"Cloudy",        "Cldy"},
+  {"Sunny",         "Sun"},
+  {"Clear",         "Clr"},
+  {"Freezing",      "Fz"},
+  {"Showers",       "Shwrs"},
+  {"Drizzle",       "Drzl"},
+  {"Blowing",       "Blwg"},
+  {"Patchy",        "Pchy"},
+  {" And ",         "/"},
+  {" and ",         "/"},
+  {" then ",        "/"},
+};
+#define NUM_WX_ABBREVS (sizeof(WX_ABBREVS) / sizeof(WX_ABBREVS[0]))
+
+String abbreviateForecast(String s) {
+  for (size_t i = 0; i < NUM_WX_ABBREVS; i++) s.replace(WX_ABBREVS[i].word, WX_ABBREVS[i].abbr);
+  return s;  // leftovers (Rain, Snow, Fog, ...) stay in NWS's own natural Title Case
+}
+
+struct WxNow {
+  float  tempF     = 0;
+  float  feelsF    = 0;
+  bool   hasFeels  = false;  // only worth its own frame if it differs from tempF
+  float  dewF      = 0;
+  String conditions;
+  bool   valid     = false;
+};
+WxNow g_wxNow;
+
+void fetchWxNow() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(WXNOW_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("WXNOW HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["properties"]["temperature"]["value"] = true;
+  filter["properties"]["dewpoint"]["value"]    = true;
+  filter["properties"]["heatIndex"]["value"]   = true;
+  filter["properties"]["windChill"]["value"]   = true;
+  filter["properties"]["textDescription"]      = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("WXNOW JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  JsonObject p = doc["properties"];
+  if (p["temperature"]["value"].isNull()) {
+    Serial.println("WXNOW: station has no current reading");
+    progEnd('0');  // keep the last known reading
+    return;
+  }
+
+  float tempC  = p["temperature"]["value"] | 0.0f;
+  float dewC   = p["dewpoint"]["value"]    | tempC;
+  float feelsC = tempC;
+  if (!p["heatIndex"]["value"].isNull())      feelsC = p["heatIndex"]["value"];
+  else if (!p["windChill"]["value"].isNull()) feelsC = p["windChill"]["value"];
+
+  g_wxNow.tempF      = cToF(tempC);
+  g_wxNow.dewF       = cToF(dewC);
+  g_wxNow.feelsF     = cToF(feelsC);
+  g_wxNow.hasFeels   = fabsf(g_wxNow.feelsF - g_wxNow.tempF) >= 3.0f;
+  g_wxNow.conditions = String(p["textDescription"] | "");
+  g_wxNow.valid      = true;
+
+  Serial.printf("WXNOW: %.0fF feels %.0fF dew %.0fF %s\n",
+      g_wxNow.tempF, g_wxNow.feelsF, g_wxNow.dewF, g_wxNow.conditions.c_str());
+  progEnd('*');
+}
+
+// Header, temp, feels-like (only when it actually differs), dew point, then
+// the conditions text (abbreviated, same as the forecast periods below).
+// Conditions text is free-form/variable-length (unlike the tag+number frames
+// above it), so it scrolls like the quake line or plane details rather than
+// getting silently truncated at 8 columns.
+void showWxNow() {
+  if (!g_wxNow.valid) return;
+
+  showFrame("WX Now", 1300);
+
+  char frame[16];
+  snprintf(frame, sizeof(frame), "Temp %dF", (int)roundf(g_wxNow.tempF));
+  showFrame(frame, 1300);
+
+  if (g_wxNow.hasFeels) {
+    snprintf(frame, sizeof(frame), "Feel %dF", (int)roundf(g_wxNow.feelsF));
+    showFrame(frame, 1300);
+  }
+
+  snprintf(frame, sizeof(frame), "Dew %dF", (int)roundf(g_wxNow.dewF));
+  showFrame(frame, 1300);
+
+  if (g_wxNow.conditions.length()) {
+    showText(abbreviateForecast(g_wxNow.conditions), -1, 2000);
+  }
+}
+
+struct WxForecastPeriod {
+  String name;           // NWS's own period name, e.g. "Tonight" -- these are
+                          // relative to now, not fixed daily slots, so we show
+                          // it as-is rather than guessing "today/tonight/tomorrow"
+  String shortForecast;  // abbreviated for display
+};
+WxForecastPeriod g_wxForecast[WXFC_PERIODS];
+bool             g_haveWxForecast = false;
+
+void fetchWxForecast() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(6000);
+  http.begin(WXFC_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("WXFC HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["properties"]["periods"][0]["name"]          = true;
+  filter["properties"]["periods"][0]["shortForecast"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("WXFC JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  int n = 0;
+  for (JsonObject p : doc["properties"]["periods"].as<JsonArray>()) {
+    if (n >= WXFC_PERIODS) break;
+    g_wxForecast[n].name          = String(p["name"] | "");
+    g_wxForecast[n].shortForecast = abbreviateForecast(String(p["shortForecast"] | ""));
+    n++;
+  }
+  g_haveWxForecast = (n > 0);
+  Serial.printf("WXFC: %d periods\n", n);
+  progEnd(n > 0 ? '*' : '0');
+}
+
+// Two frames per period: its name in NWS's own natural case (e.g. "Tonight",
+// "This Afternoon"), then its abbreviated shortForecast. Both are free-form/
+// variable-length text (period names run well past 8 columns, e.g. "This
+// Afternoon" or "Sunday Night"), so both scroll rather than getting silently
+// truncated.
+void showWxForecast() {
+  if (!g_haveWxForecast) return;
+  for (int i = 0; i < WXFC_PERIODS; i++) {
+    if (!g_wxForecast[i].name.length()) continue;
+    showText(g_wxForecast[i].name, -1, 1800);
+    showText(g_wxForecast[i].shortForecast, -1, 2000);
+  }
+}
+
+
 //                          ___  _____ __  __
 //   _ __  _   _  ___      / _ \| ____|  \/  |
 //  | '_ \| | | |/ __|    | | | |  _| | |\/| |
@@ -2134,6 +2352,12 @@ void loop() {
       static RefetchTimer wxTimer;
       if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
 
+      // --- NWS: current conditions and short forecast ----------------------
+      static RefetchTimer wxNowTimer;
+      if (wxNowTimer.due(WXNOW_REFETCH_MS)) fetchWxNow();
+      static RefetchTimer wxFcTimer;
+      if (wxFcTimer.due(WXFC_REFETCH_MS)) fetchWxForecast();
+
       // --- NYC OEM: refresh the emergency alert on its own (slow) clock ---
       static RefetchTimer oemTimer;
       if (oemTimer.due(OEM_REFETCH_MS)) fetchOemAlert();
@@ -2224,6 +2448,10 @@ void loop() {
 
         // ...then the nearest Atlantic named storm, if there is one.
         showHurricane();
+
+        // ...then current conditions and the short forecast.
+        showWxNow();
+        showWxForecast();
       }
 
     } else {
