@@ -70,9 +70,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
 - **Citi Bike**: bikes and docks available at Clinton St & Grand St, summed
   across the two station IDs Citi Bike splits that corner into (a main rack
-  and a smaller overflow rack). Two frames, same cadence as a bus arrival:
-  `Citi 57b` then `Citi 6d`. Checked every 30s; nothing shown until the first
-  reading comes back.
+  and a smaller overflow rack). A `CitiBike` header, then bike count and dock
+  count: `57 bikes`, `6 docks`. Checked every 30s; nothing shown until the
+  first reading comes back.
 - **ISS overhead**: a fun ping — `ISS OVER` scrolls in, cycling alongside the
   trains/buses/Citi Bike (no special alert treatment), when the ISS's current
   ground point is within `ISS_OVERHEAD_KM` (400 km) of home. This is a
@@ -101,6 +101,19 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   sign among Virgo/Capricorn/Aquarius from
   [freehoroscopeapi.com](https://freehoroscopeapi.com), shown 5% of the time
   (`HOROSCOPE_SHOW_PCT` in `main.cpp`).
+- **Moon phase**: `Moon` header, then the current phase (`Waxing Gibbous`,
+  `Full Moon`, ...), then days until whichever of the next new/full moon is
+  sooner (`Full 13d`) — all computed locally from a reference new moon and
+  the synodic month length, no network call.
+- **Sunrise/sunset**: `Sunrise` / `Sunset` headers then the time
+  (`6:42am`), for home's coordinates via
+  [sunrise-sunset.org](https://sunrise-sunset.org/).
+- **Tide**: `High` or `Low` then the next tide's time and height
+  (`3:45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
+- **Next holiday** (novelty, shown `HOLIDAY_SHOW_PCT` = 20% of the time): a
+  `Holiday` header, the next US public holiday that's actually observed here
+  (nationwide, or NY specifically), then a countdown (`29d`), via
+  [Nager.Date](https://date.nager.at/).
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
   the new data in, then fades back up — applies to every data field, not just
   fixed-width ones; longer content (alert text, WX conditions/forecast, the
@@ -319,6 +332,8 @@ More pictures coming
   aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (4.3), `EQ_MAX_AGE_S` (86400 =
   24 h), `EQ_REFETCH_MS` (600000). Shows a quake only if `mag >= EQ_MIN_MAG`
   **or** it's tsunami-flagged, and only within the age window.
+- **Sun/tide location**: `SUN_URL` (lat/lng) and `TIDE_URL`'s `station` param
+  (`8518750` = The Battery, NY) in `main.cpp`; both default to home's area.
 - **User-Agent**: `USER_AGENT` in `main.cpp` — **must** carry real contact info.
   adsb.lol returns `403 "User-Agent too generic; include valid contact info."`
   for a blank or generic UA, which is what silently killed the original
@@ -481,7 +496,35 @@ More pictures coming
   and [`time.nist.gov`](https://tf.nist.gov/tf-cgi/servers.cgi) — not a feed,
   but every feed's "how many minutes until" math and the earthquake/OEM age
   windows depend on having a real clock. Falls back to the train feed's own
-  `updated` timestamp if NTP hasn't synced yet.
+  `updated` timestamp if NTP hasn't synced yet. `setenv("TZ", "EST5EDT,...")` +
+  `tzset()` right after gives `localtime_r()` real NY-local time (DST
+  included), used only for display formatting (sunrise/sunset, tide) — `time()`
+  itself stays UTC, so nothing upstream that already assumed UTC is affected.
+- **Sunrise/sunset**: [`api.sunrise-sunset.org/json?lat=&lng=&formatted=0`](https://sunrise-sunset.org/api)
+  — free, no key. `results.sunrise`/`results.sunset` come back as ISO-8601 UTC
+  (parsed with the existing `isoToEpoch()`), then formatted to NY local time
+  for display. Refreshed every 6h; times only actually shift by seconds/day.
+- **Tides**: [`api.tidesandcurrents.noaa.gov/api/prod/datagetter`](https://api.tidesandcurrents.noaa.gov/api-helper/documentation.html)
+  — NOAA CO-OPS, free, no key. `station=8518750` is The Battery, NY, the
+  nearest published tide station to home; `product=predictions&interval=hilo`
+  gives just the high/low turning points, not a full curve.
+  `time_zone=lst_ldt` returns the station's own local time (already
+  DST-adjusted) rather than UTC, so display just pulls hours/minutes out of
+  the `"YYYY-MM-DD HH:MM"` string rather than doing its own timezone math.
+  `begin_date=today&range=48` always fetches today's remaining events plus all
+  of tomorrow's, so there's reliably a "next" tide to show even late at
+  night — NOAA resolves the literal `today` server-side, so the device never
+  needs to know the current date itself. Refreshed every 4h.
+- **Holidays**: [`date.nager.at/api/v3/NextPublicHolidays/US`](https://date.nager.at/)
+  — free, no key. Returns upcoming US public holidays soonest-first; each
+  entry carries `global` (observed nationwide) and, when `global` is false, a
+  `counties` array of state codes (e.g. some states get `Columbus Day`,
+  others `Indigenous Peoples' Day`, same date, different `counties` lists) —
+  `fetchHoliday()` keeps the first entry that's either `global` or lists
+  `US-NY`, so a state-specific holiday elsewhere in the list doesn't get
+  shown as if it applied at home. Refreshed every 12h; shown only
+  `HOLIDAY_SHOW_PCT` (20%) of the time, same novelty treatment as the
+  horoscope.
 
 ### NYC OEM alert categories
 
@@ -510,6 +553,14 @@ real "Basement Preparedness" flood-prep alert (`category=Geo`) both carried
 identical `severity=Severe`/`urgency=Immediate`, so severity/urgency alone
 couldn't separate the routine notice from the real one.
 
+**Missing Vulnerable Adult alerts** are excluded separately, by headline text
+rather than category: confirmed live 2026-09-13 that a "Missing Vulnerable
+Adult Alert" carries `category=Rescue`/`severity=Extreme`/`urgency=Immediate`
+— the same fields a genuine rescue-in-progress would carry — so those fields
+can't tell the two apart. `oemIsVulnerablePersonAlert()` in `main.cpp` matches
+`"vulnerable"` (case-insensitive) in the cleaned headline instead; blanket
+excluding `category=="Rescue"` would risk hiding a real rescue emergency.
+
 **This is deliberately a denylist of one confirmed-noisy category, not an
 allowlist of "emergency" categories.** Don't be tempted to flip it to "only
 show Geo/Met/Fire/Security/CBRNE/Rescue" — the same live check found NYC's
@@ -531,6 +582,50 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 6.7
+ - Sep 13, 2026
+ - Added a **next US holiday** novelty feed: `Holiday` header, the next
+   holiday that's actually observed here (nationwide, or specifically listed
+   for NY — some states get `Columbus Day`, others `Indigenous Peoples' Day`
+   on the same date, and only one of those two lists NY), then a day
+   countdown. Free, no-key [Nager.Date](https://date.nager.at/) API. Shown
+   20% of the time (`HOLIDAY_SHOW_PCT`), same novelty treatment as the
+   horoscope.
+ - version 6.6
+ - Sep 13, 2026
+ - Moon phase now adds a third frame: days until whichever of the next
+   new/full moon is sooner (`Full 13d`) — `daysToNew`/`daysToFull` are both
+   just the distance from today's phase to that target offset in the
+   synodic month, wrapped forward into the next cycle if this month's has
+   already passed.
+ - version 6.5
+ - Sep 13, 2026
+ - Citi Bike now shows a `CitiBike` header before the bike/dock counts, and
+   the counts read out in full (`57 bikes` / `6 docks`) instead of the
+   abbreviated `Citi 57b` / `Citi 6d`.
+ - version 6.4
+ - Sep 13, 2026
+ - `progBegin()` now fades down to the progress bar's brightness
+   (`fadeBrightnessBoth()`) instead of snapping straight to it
+   (`setBrightnessBoth()`) — the last real frame before a fetch cycle was
+   cutting from full brightness to dim instead of easing down like every
+   other transition.
+ - version 6.3
+ - Sep 13, 2026
+ - NYC OEM alert: added `oemIsVulnerablePersonAlert()` to filter out "Missing
+   Vulnerable Adult Alert" notices. Confirmed live that these carry
+   `category=Rescue`/`severity=Extreme`/`urgency=Immediate` — identical to a
+   genuine rescue emergency's fields — so this matches on headline text
+   (`"vulnerable"`) instead of blanket-excluding `category=="Rescue"`, which
+   would risk hiding a real one.
+ - version 6.2
+ - Sep 13, 2026
+ - Added three ambient/novelty feeds: **moon phase** (computed locally, no
+   fetch), **sunrise/sunset** ([sunrise-sunset.org](https://sunrise-sunset.org/)),
+   and the next **tide** at The Battery, NY (NOAA CO-OPS predictions). Also
+   sets a real `TZ` (`EST5EDT,...`) after NTP sync so `localtime_r()` can
+   format NY wall-clock times for display — `time()` itself is untouched and
+   stays UTC.
  - version 6.1
  - Sep 13, 2026
  - Gave the plane section's fade/slide/marquee transition (`showFadeFrame()`,
@@ -658,5 +753,8 @@ Feel free to submit issues or pull requests for improvements!
 - Citi Bike dock counts via the [GBFS](https://github.com/MobilityData/gbfs) feed.
 - ISS position via [wheretheiss.at](https://wheretheiss.at/w/developer).
 - Hurricane tracking via the [National Hurricane Center](https://www.nhc.noaa.gov/).
+- Sunrise/sunset via [sunrise-sunset.org](https://sunrise-sunset.org/).
+- Tide predictions via [NOAA CO-OPS](https://api.tidesandcurrents.noaa.gov/api-helper/documentation.html), station 8518750 (The Battery, NY).
+- Holidays via [Nager.Date](https://date.nager.at/).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.

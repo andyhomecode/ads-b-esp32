@@ -510,6 +510,20 @@ struct CapAlert {
 // filtering out all Minor/Moderate severity regardless of urgency.
 #define OEM_MODERATE_IMMEDIATE_PASSES true
 
+// Missing/endangered "Vulnerable Adult" alerts (headline
+// "Notify NYC - Missing Vulnerable Adult Alert - <name> (NYC)", confirmed
+// live 2026-09-13) carry category=Rescue, severity=Extreme,
+// urgency=Immediate -- the same fields a genuine rescue-in-progress would
+// carry, so unlike the Health/category split above, severity/urgency/category
+// alone can't tell them apart. Blanket-excluding category=="Rescue" would
+// risk hiding a real rescue emergency, so this matches on the headline text
+// instead, same as the English/ASCII title checks below (oemTitleLooksEnglish).
+bool oemIsVulnerablePersonAlert(const String &headline) {
+  String h = headline;
+  h.toLowerCase();
+  return h.indexOf("vulnerable") >= 0;
+}
+
 bool capIsHighUrgency(const CapAlert &a) {
   bool severityLow = (a.severity == "Minor" || a.severity == "Moderate");
   if (OEM_MODERATE_IMMEDIATE_PASSES && a.severity == "Moderate" && a.urgency == "Immediate") {
@@ -517,7 +531,8 @@ bool capIsHighUrgency(const CapAlert &a) {
   }
   bool urgencyLow  = (a.urgency  == "Future" || a.urgency  == "Past");
   bool categoryLow = (a.category == "Health");
-  return !severityLow && !urgencyLow && !categoryLow;
+  bool vulnerable  = oemIsVulnerablePersonAlert(a.headline);
+  return !severityLow && !urgencyLow && !categoryLow && !vulnerable;
 }
 
 // Shows a CAP alert as a blinking source tag ("NWS", "OEM GEO") followed by
@@ -587,7 +602,12 @@ void progReset() {
 void progBegin() {
   if (g_progN >= 8) progReset();  // ran past the last column -- clear and continue
   g_prog[g_progN] = '-';
-  setBrightnessBoth(BRIGHT_MIN);
+  // Same fade-down used by showFrame()/showFadeFrame() -- previously a bare
+  // setBrightnessBoth(BRIGHT_MIN), which snapped straight from the last
+  // frame's full brightness to the progress bar's dim level instead of
+  // easing into it. A no-op once the bar's already dim (every call here
+  // after the first in a given fetch cycle).
+  fadeBrightnessBoth(BRIGHT_MIN, 8);
   writeRawFrame(g_prog, g_progN);  // dp lit = "working"
 }
 
@@ -1342,13 +1362,15 @@ void fetchCitibike() {
   progEnd('*');
 }
 
-// Two frames, same cadence as a bus arrival: bike count then dock count.
+// Header, then two frames, same cadence as a bus arrival: bike count then
+// dock count.
 void showCitibike() {
   if (g_citibikeBikes < 0) return;  // no reading yet
+  showFrame("CitiBike", 1300);
   char frame[16];
-  snprintf(frame, sizeof(frame), "Citi %ldb", g_citibikeBikes);
+  snprintf(frame, sizeof(frame), "%ld bikes", g_citibikeBikes);
   showFrame(frame, 1300);
-  snprintf(frame, sizeof(frame), "Citi %ldd", g_citibikeDocks);
+  snprintf(frame, sizeof(frame), "%ld docks", g_citibikeDocks);
   showFrame(frame, 1300);
 }
 
@@ -1675,6 +1697,343 @@ void showHoroscope() {
   Horoscope &h = g_horoscopes[valid[random(numValid)]];
   showFrame(h.label, 1300);
   showFadeFrame(h.text, 2500);
+}
+
+
+//  __  __
+// |  \/  | ___   ___  _ __
+// | |\/| |/ _ \ / _ \| '_ \
+// | |  | | (_) | (_) | | | |
+// |_|  |_|\___/ \___/|_| |_|
+//
+// Moon phase, computed locally from a known reference new moon and the
+// average synodic month length -- no network fetch needed. Good to about a
+// day's accuracy, plenty for a novelty display.
+#define MOON_REFERENCE_EPOCH 947182440L    // 2000-01-06 18:14 UTC, a known new moon
+#define MOON_SYNODIC_DAYS    29.530588853  // average new-moon-to-new-moon length
+
+// Days since the last new moon, in [0, MOON_SYNODIC_DAYS).
+double moonPhaseDays(long nowEpoch) {
+  double days  = (nowEpoch - MOON_REFERENCE_EPOCH) / 86400.0;
+  double phase = fmod(days, MOON_SYNODIC_DAYS);
+  if (phase < 0) phase += MOON_SYNODIC_DAYS;
+  return phase;
+}
+
+const char *moonPhaseName(double phase) {
+  static const char *names[] = {
+    "New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous",
+    "Full Moon", "Waning Gibbous", "Last Quarter", "Waning Crescent",
+  };
+  int idx = ((int)round(phase / MOON_SYNODIC_DAYS * 8.0)) % 8;
+  return names[idx];
+}
+
+void showMoonPhase(long nowEpoch) {
+  double phase = moonPhaseDays(nowEpoch);
+  showFrame("Moon", 1300);
+  showFadeFrame(moonPhaseName(phase), 2200);
+
+  // Whichever of new/full moon is closer, counting forward from today --
+  // full moon sits half a synodic month after new moon, so both "days
+  // until" figures are just that offset's distance from the current phase,
+  // wrapped forward into the next cycle if it's already past this month's.
+  double half       = MOON_SYNODIC_DAYS / 2.0;
+  double daysToNew   = fmod(MOON_SYNODIC_DAYS - phase, MOON_SYNODIC_DAYS);
+  double daysToFull  = fmod(half - phase + MOON_SYNODIC_DAYS, MOON_SYNODIC_DAYS);
+
+  char frame[10];
+  if (daysToNew <= daysToFull) {
+    snprintf(frame, sizeof(frame), "New %dd", (int)round(daysToNew));
+  } else {
+    snprintf(frame, sizeof(frame), "Full %dd", (int)round(daysToFull));
+  }
+  showFrame(frame, 1300);
+}
+
+
+//  ____              _              _
+// / ___| _   _ _ __ | |_ __ ___   ___  ___| |_
+// \___ \| | | | '_ \| '__/ __| / _ \/ __| __|
+//  ___) | |_| | | | | | \__ \|  __/\__ \ |_
+// |____/ \__,_|_| |_|_| |___/\___||___/\__|
+//
+// Sunrise/sunset via sunrise-sunset.org (free, no key) for home's coordinates.
+// The feed's times come back UTC; display formatting converts to NY
+// wall-clock via the TZ set up alongside NTP in setup() below.
+#define SUN_URL         "https://api.sunrise-sunset.org/json?lat=40.7168&lng=-73.9861&formatted=0"
+#define SUN_REFETCH_MS  21600000    // 6h -- the times only actually shift by seconds/day
+
+struct SunTimes {
+  long sunriseEpoch = 0;
+  long sunsetEpoch  = 0;
+  bool valid        = false;
+};
+SunTimes g_sun;
+
+void fetchSunTimes() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(SUN_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("SUN HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["results"]["sunrise"] = true;
+  filter["results"]["sunset"]  = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("SUN JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  g_sun.sunriseEpoch = isoToEpoch(doc["results"]["sunrise"] | "");
+  g_sun.sunsetEpoch  = isoToEpoch(doc["results"]["sunset"]  | "");
+  g_sun.valid        = g_sun.sunriseEpoch > 0 && g_sun.sunsetEpoch > 0;
+  Serial.printf("SUN: rise %ld set %ld\n", g_sun.sunriseEpoch, g_sun.sunsetEpoch);
+  progEnd(g_sun.valid ? '*' : 'X');
+}
+
+// Epoch -> "6:42am", NY local, via the TZ set up in setup() -- always <=7
+// chars, so this never needs to scroll.
+String hhmmAmPm(long epoch) {
+  time_t t = (time_t)epoch;
+  struct tm tmLocal;
+  localtime_r(&t, &tmLocal);
+  int h = tmLocal.tm_hour % 12;
+  if (h == 0) h = 12;
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d:%02d%s", h, tmLocal.tm_min, tmLocal.tm_hour < 12 ? "am" : "pm");
+  return String(buf);
+}
+
+void showSunTimes() {
+  if (!g_sun.valid) return;
+  showFrame("Sunrise", 1300);
+  showFrame(hhmmAmPm(g_sun.sunriseEpoch), 1300);
+  showFrame("Sunset", 1300);
+  showFrame(hhmmAmPm(g_sun.sunsetEpoch), 1300);
+}
+
+
+//  _____ _     _
+// |_   _(_) __| | ___
+//   | | | |/ _` |/ _ \
+//   | | | | (_| |  __/
+//   |_| |_|\__,_|\___|
+//
+// NOAA tide predictions for The Battery, NY (station 8518750) -- the nearest
+// published tide station to home. time_zone=lst_ldt returns the station's own
+// local time, already DST-adjusted, so no timezone math is needed beyond
+// pulling hours/minutes back out of the string. range=48 starting at the top
+// of today comfortably covers "what's next" even late at night, without this
+// device ever needing to know what today's date is -- NOAA resolves the
+// literal "today" itself.
+#define TIDE_URL         "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?begin_date=today&range=48&station=8518750&product=predictions&datum=MLLW&time_zone=lst_ldt&units=english&interval=hilo&format=json"
+#define TIDE_REFETCH_MS  14400000   // 4h -- plenty since every fetch already looks 48h ahead
+#define TIDE_MAX_EVENTS  16
+
+// wallSec is seconds-of-local-time in the same daysFromCivil() arithmetic
+// space isoToEpoch() uses -- not a real UTC epoch, just an axis that's
+// consistent with "now" converted the same way (see nowNyWallSec() below), so
+// the two can be diffed directly for a countdown/lookup without ever
+// materializing a real epoch for either side.
+struct TideEvent {
+  long  wallSec;
+  float ft;
+  char  type;   // 'H' or 'L'
+};
+TideEvent g_tides[TIDE_MAX_EVENTS];
+int       g_tideCount = 0;
+
+void fetchTide() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(6000);
+  http.begin(TIDE_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("TIDE HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["predictions"][0]["t"]    = true;
+  filter["predictions"][0]["v"]    = true;
+  filter["predictions"][0]["type"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("TIDE JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  g_tideCount = 0;
+  for (JsonObject p : doc["predictions"].as<JsonArray>()) {
+    if (g_tideCount >= TIDE_MAX_EVENTS) break;
+    int Y, Mo, D, h, m;
+    if (sscanf(p["t"] | "", "%d-%d-%d %d:%d", &Y, &Mo, &D, &h, &m) < 5) continue;
+    TideEvent &e  = g_tides[g_tideCount];
+    e.wallSec     = daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L;
+    e.ft          = atof(p["v"] | "0");
+    const char *t = p["type"] | "H";
+    e.type        = t[0];
+    g_tideCount++;
+  }
+  Serial.printf("TIDE: %d predictions\n", g_tideCount);
+  progEnd(g_tideCount > 0 ? '*' : '0');
+}
+
+// "Now", in the same wall-clock arithmetic space as g_tides[].wallSec.
+long nowNyWallSec(long utcEpoch) {
+  time_t t = (time_t)utcEpoch;
+  struct tm tmLocal;
+  localtime_r(&t, &tmLocal);
+  return daysFromCivil(tmLocal.tm_year + 1900, tmLocal.tm_mon + 1, tmLocal.tm_mday) * 86400L +
+         tmLocal.tm_hour * 3600L + tmLocal.tm_min * 60L + tmLocal.tm_sec;
+}
+
+void showTide(long nowEpoch) {
+  if (g_tideCount == 0) return;
+  long nowWall = nowNyWallSec(nowEpoch);
+
+  const TideEvent *next = nullptr;
+  for (int i = 0; i < g_tideCount; i++) {
+    if (g_tides[i].wallSec >= nowWall) { next = &g_tides[i]; break; }
+  }
+  if (!next) return;  // ran off the 48h window; the next fetch refills it
+
+  int h   = (int)((next->wallSec % 86400) / 3600);
+  int m   = (int)((next->wallSec % 3600) / 60);
+  int h12 = h % 12;
+  if (h12 == 0) h12 = 12;
+
+  showFrame(next->type == 'H' ? "High" : "Low", 1300);
+  char frame[20];
+  snprintf(frame, sizeof(frame), "%d:%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
+  showFadeFrame(frame, 2200);
+}
+
+
+//  _   _       _ _     _
+// | | | | ___ | (_) __| | __ _ _   _
+// | |_| |/ _ \| | |/ _` |/ _` | | | |
+// |  _  | (_) | | | (_| | (_| | |_| |
+// |_| |_|\___/|_|_|\__,_|\__,_|\__, |
+//                              |___/
+//
+// Next US public holiday, via Nager.Date's free no-key API. The list comes
+// back soonest-first; we keep the first entry that's actually observed here
+// -- `global:true` (nationwide) or `counties` includes "US-NY" -- since a
+// state-specific one elsewhere in the list (e.g. some states' Columbus Day
+// vs. others' Indigenous Peoples' Day, same date) isn't necessarily the one
+// that applies at home. Shown only HOLIDAY_SHOW_PCT of the time, same
+// novelty treatment as the horoscope.
+#define HOLIDAY_URL         "https://date.nager.at/api/v3/NextPublicHolidays/US"
+#define HOLIDAY_REFETCH_MS  43200000   // 12h -- the list only changes once a holiday passes
+#define HOLIDAY_SHOW_PCT    20         // % chance per cycle that showHoliday() shows anything
+
+struct Holiday {
+  String name;
+  long   civilDay = 0;   // daysFromCivil() of the holiday's date
+  bool   valid    = false;
+};
+Holiday g_holiday;
+
+void fetchHoliday() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(HOLIDAY_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("HOLIDAY HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter[0]["date"]     = true;
+  filter[0]["name"]     = true;
+  filter[0]["global"]   = true;
+  filter[0]["counties"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("HOLIDAY JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  g_holiday.valid = false;
+  for (JsonObject h : doc.as<JsonArray>()) {
+    bool appliesHere = h["global"] | false;
+    if (!appliesHere) {
+      for (JsonVariant c : h["counties"].as<JsonArray>()) {
+        if (strcmp(c.as<const char *>(), "US-NY") == 0) { appliesHere = true; break; }
+      }
+    }
+    if (!appliesHere) continue;
+
+    int Y, Mo, D;
+    if (sscanf(h["date"] | "", "%d-%d-%d", &Y, &Mo, &D) < 3) continue;
+    g_holiday.name    = String(h["name"] | "");
+    g_holiday.civilDay = daysFromCivil(Y, Mo, D);
+    g_holiday.valid   = true;
+    break;  // list is soonest-first
+  }
+  Serial.printf("HOLIDAY: %s\n", g_holiday.valid ? g_holiday.name.c_str() : "(none applicable)");
+  progEnd(g_holiday.valid ? '*' : '0');
+}
+
+// Rolls HOLIDAY_SHOW_PCT% each call, same first-time-unconditional treatment
+// as showHoroscope() -- lets you confirm the feed works without waiting out
+// the dice roll.
+void showHoliday(long nowEpoch) {
+  static bool everShown = false;
+  if (!g_holiday.valid) return;
+  if (everShown && (int)random(100) >= HOLIDAY_SHOW_PCT) return;
+  everShown = true;
+
+  time_t t = (time_t)nowEpoch;
+  struct tm tmLocal;
+  localtime_r(&t, &tmLocal);
+  long today = daysFromCivil(tmLocal.tm_year + 1900, tmLocal.tm_mon + 1, tmLocal.tm_mday);
+  long daysAway = g_holiday.civilDay - today;
+  if (daysAway < 0) daysAway = 0;  // stale cache from just after it passed; next fetch refills
+
+  showFrame("Holiday", 1300);
+  showFadeFrame(g_holiday.name, 2000);
+  char frame[10];
+  snprintf(frame, sizeof(frame), "%ldd", daysAway);
+  showFrame(frame, 1300);
 }
 
 
@@ -2328,7 +2687,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 6.1");
+  showText(" V 6.7");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -2346,6 +2705,12 @@ void setup() {
       delay(250);
     }
     Serial.printf("NTP epoch: %ld\n", (long)time(nullptr));
+
+    // localtime_r() below (sunrise/sunset/tide display formatting) needs a
+    // real NY zone, DST included -- time(nullptr) itself is unaffected by TZ,
+    // so this doesn't touch anything upstream that already assumes UTC.
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
   } else {
     g_wifiConnected = false;
   }
@@ -2475,6 +2840,18 @@ void loop() {
       static RefetchTimer horoscopeTimer;
       if (horoscopeTimer.due(HOROSCOPE_REFETCH_MS)) fetchHoroscopes();
 
+      // --- Sun: refresh sunrise/sunset on its own (slow) clock -------------
+      static RefetchTimer sunTimer;
+      if (sunTimer.due(SUN_REFETCH_MS)) fetchSunTimes();
+
+      // --- Tide: refresh The Battery predictions on its own clock ----------
+      static RefetchTimer tideTimer;
+      if (tideTimer.due(TIDE_REFETCH_MS)) fetchTide();
+
+      // --- Holiday: refresh the next US public holiday on its own clock ----
+      static RefetchTimer holidayTimer;
+      if (holidayTimer.due(HOLIDAY_REFETCH_MS)) fetchHoliday();
+
       // If we hit the network this pass, hold the finished bar a beat, then let
       // the first real frame scroll it away.
       if (progRan()) {
@@ -2551,6 +2928,14 @@ void loop() {
 
         // ...then, rarely, a random sign's daily horoscope.
         showHoroscope();
+
+        // ...then moon phase, sunrise/sunset, and the next tide at The Battery.
+        showMoonPhase(nowEpoch);
+        showSunTimes();
+        showTide(nowEpoch);
+
+        // ...then, rarely, the next US public holiday.
+        showHoliday(nowEpoch);
       }
 
     } else {
