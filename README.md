@@ -1,4 +1,4 @@
-# BS info box for my living room
+# Andy's Bullshit Display
 
 I need more dumb toys in my house, so I made this thing which displays planes I can see out the window,
 subway and bus times for the area, NWS weather and NYC emergency alerts, hurricanes in the atlantic basin,
@@ -38,23 +38,31 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   no key → the whole bus section is skipped, and a stop with nothing tracked
   (e.g. the M9 overnight) just doesn't draw.
 - **Weather alert**: if the NWS has any active watch/warning/advisory for the
-  point, a blinking `NWS` tag then the event name (`Winter Weather Advisory`)
-  scroll across — the event only, no headline or instructions. Refreshed every
-  5 min; nothing shown when it's clear.
+  point, a blinking, centered `-=NWS=-` tag then the event name (`Winter
+  Weather Advisory`) scroll across — the event only, no headline or
+  instructions. Only the tag blinks; the event text holds steady while it
+  scrolls so it's actually readable. Refreshed every 5 min; nothing shown when
+  it's clear.
 - **NYC OEM emergency alert**: Notify NYC's live CAP (Common Alerting Protocol)
   feed, checked every 5 min. Unlike the NWS alert (which is already scoped to
   one point) this feed covers everything from a subway delay to a building
   collapse, so it's filtered by `capIsHighUrgency()` — a blinking `OEM` tag
-  (plus its CAP category, e.g. `OEM GEO`) then the alert's title (not its CAP `event`, which for this feed is always
+  (plus its CAP category, e.g. `OEM GEO`; only the tag blinks, same as the NWS
+  alert) then the alert's title (not its CAP `event`, which for this feed is always
   the generic "Civil Emergency Message" SAME code name; the title is cleaned
   of OEM's "Notify NYC - ... (NYC)" wrapper, e.g. `Basement Preparedness -
   9/13`) only shows for alerts that aren't clearly low severity/urgency, or
   category `Health` (blank/unknown severity/urgency fields are shown, not
   hidden, so a real emergency a warning specialist tagged in a hurry doesn't
   get silently dropped — see "NYC OEM alert categories" under API Reference
-  for why `Health` alone is excluded). OEM re-sends every alert once per
-  language; only the English copy (`senderName` = `NYCEM [English]`) is ever
-  shown. Nothing shown otherwise.
+  for why `Health` alone is excluded). One tunable exception: `severity`
+  `Moderate` is normally treated as low, but NWS/NYC OEM tag Advisory-level
+  products (e.g. a Flood *Advisory*, as opposed to a Severe-severity Flood
+  *Warning*) as `Moderate` — so a `Moderate` alert still shows when `urgency`
+  is `Immediate` (`OEM_MODERATE_IMMEDIATE_PASSES` in `main.cpp`; flip to
+  `false` to go back to filtering out all Minor/Moderate regardless of
+  urgency). OEM re-sends every alert once per language; only the English copy
+  (`senderName` = `NYCEM [English]`) is ever shown. Nothing shown otherwise.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
@@ -84,15 +92,20 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   (`Temp 72F`), feels-like (`Feel 70F`, only shown when it actually differs),
   and dew point (`Dew 61F`) as short frames, then the conditions and the next
   two forecast periods (NWS's own period names, e.g. `Tonight`) as scrolling
-  text — natural-language conditions text is variable-length, so it scrolls
-  instead of getting cut off at 8 columns. Common NWS wording is shortened
-  (`Thunderstorms` → `T-storms`, `Chance` → `Chc`, etc.) but kept in natural
-  mixed case, not shouted in all-caps. Current conditions checked every 10
-  min, forecast every 30 min.
-- **Fade + scroll transitions**: each frame dims, scrolls the old data out to
-  the left while the new data scrolls in from the right, then fades back up to
-  full brightness. Plane details scroll horizontally (they're longer than the
-  8 columns).
+  text, shown in full and in NWS's own natural mixed case — natural-language
+  conditions text is variable-length, so it scrolls instead of getting cut off
+  at 8 columns, and since it already scrolls there's no need to abbreviate or
+  shout it in all-caps. Current conditions checked every 10 min, forecast
+  every 30 min.
+- **Daily horoscope** (novelty, not a real feed): daily prose for a random
+  sign among Virgo/Capricorn/Aquarius from
+  [freehoroscopeapi.com](https://freehoroscopeapi.com), shown 5% of the time
+  (`HOROSCOPE_SHOW_PCT` in `main.cpp`).
+- **Fade + scroll transitions**: each frame dims, slides the old data out and
+  the new data in, then fades back up — applies to every data field, not just
+  fixed-width ones; longer content (alert text, WX conditions/forecast, the
+  quake line, horoscope) marquees across after its fade-in. Header tags snap
+  in without a fade.
 - **Decoupled fetch**: each source (trains ~30s, adsb.lol ~20s, buses ~30s,
   weather ~5min, NYC OEM ~5min, Citi Bike ~30s, ISS ~20s, NHC ~30min) polls on
   its own clock and the display loops off the caches between fetches. A
@@ -518,6 +531,23 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 6.1
+ - Sep 13, 2026
+ - Gave the plane section's fade/slide/marquee transition (`showFadeFrame()`,
+   formerly `showPlaneFrame()`) to every other non-header content field.
+ - Progress bar now wraps back to column 0 instead of freezing when a pass
+   has more than 8 HTTP calls.
+ - version 6.0
+ - Sep 13, 2026
+ - Renamed the project to **Andy's Bullshit Display**.
+ - Added a **daily horoscope** novelty feed (Virgo/Capricorn/Aquarius), shown
+   5% of the time.
+ - NYC OEM: a `Moderate`-severity alert now still shows when `urgency` is
+   `Immediate` (e.g. a Flood Advisory) — see `OEM_MODERATE_IMMEDIATE_PASSES`.
+ - NWS alert tag changed from `NWS` to a centered `-=NWS=-`; alerts now only
+   blink their source tag, not the scrolling message.
+ - WX conditions/forecast text is shown in full, in NWS's own mixed case,
+   instead of abbreviated.
  - version 5.8
  - Sep 12, 2026
  - Added a **current conditions + short forecast** feed from NWS: `WX Now`

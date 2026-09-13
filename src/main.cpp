@@ -400,6 +400,56 @@ void showText(String text, int dpLocation = -1, int holdMs = 2000) {
 }
 
 
+// Like showFrame(), but for content that can run longer than 8 columns
+// (plane details, alert text, forecast text, ...): fade down, slide the
+// first 8 columns in, fade back up and hold -- then, if there's more text,
+// keep marqueeing it across at full brightness before the next field fades
+// down in turn. This is the "every non-header field gets a proper
+// fade/slide transition, not a hard snap" treatment used everywhere data
+// (not a fixed label/tag) is shown -- showText() is for header tags only.
+void showFadeFrame(String text, int holdMs = 2000, int stepMs = 45) {
+  String first = text.substring(0, 8);
+  while (first.length() < 8) first += " ";
+
+  fadeBrightnessBoth(BRIGHT_DIM, 8);
+
+  String buf = g_frame + first;
+  for (int i = 1; i <= 8; i++) {
+    writeRawFrame(buf.substring(i, i + 8), -1);
+    delay(stepMs);
+  }
+  g_frame = first;
+
+  fadeBrightnessBoth(BRIGHT_FULL, 14);
+  delay(holdMs);
+
+  if (text.length() > 8) {
+    for (int i = 1; i <= text.length() - 8; i++) {
+      String frame = text.substring(i, i + 8);
+      writeRawFrame(frame, -1);
+      delay(200);
+    }
+    g_frame = text.substring(text.length() - 8);
+    delay(1000);
+  }
+}
+
+
+// Pads text to exactly 8 columns, split evenly on both sides (extra space
+// goes right when the pad amount is odd). Used for short static header
+// frames that should sit centered rather than crammed against the left.
+String center8(const String &s) {
+  int pad = 8 - (int)s.length();
+  if (pad <= 0) return s.substring(0, 8);
+  int left = pad / 2;
+  String out;
+  for (int i = 0; i < left; i++) out += ' ';
+  out += s;
+  while (out.length() < 8) out += ' ';
+  return out;
+}
+
+
 void blink(bool blinkOn) {
 
   if (blinkOn) {
@@ -451,24 +501,37 @@ struct CapAlert {
 // listing flood as the example under Met), so guessing every category a real
 // emergency might land in is riskier than excluding the one confirmed-noisy
 // category.
+// Tunable exception: a Moderate-severity alert with urgency=Immediate still
+// gets through even though Moderate is normally treated as low. Reasoning:
+// NWS/NYC OEM tag Advisory-level products (e.g. Flood *Advisory*, as opposed
+// to a Severe-severity Flood *Warning*) as severity=Moderate -- an Advisory
+// that's already Immediate is worth showing, while non-Immediate
+// Minor/Moderate noise should stay filtered. Set to false to go back to
+// filtering out all Minor/Moderate severity regardless of urgency.
+#define OEM_MODERATE_IMMEDIATE_PASSES true
+
 bool capIsHighUrgency(const CapAlert &a) {
   bool severityLow = (a.severity == "Minor" || a.severity == "Moderate");
+  if (OEM_MODERATE_IMMEDIATE_PASSES && a.severity == "Moderate" && a.urgency == "Immediate") {
+    severityLow = false;
+  }
   bool urgencyLow  = (a.urgency  == "Future" || a.urgency  == "Past");
   bool categoryLow = (a.category == "Health");
   return !severityLow && !urgencyLow && !categoryLow;
 }
 
 // Shows a CAP alert as a blinking source tag ("NWS", "OEM GEO") followed by
-// the event name, both flashing to catch the eye -- one shared treatment for
-// every CAP-based feed instead of each one rolling its own.
+// the event name -- only the source tag blinks, to catch the eye; the event
+// text stays steady since blinking while it scrolls makes it hard to read.
+// The tag is a fixed short label so it just snaps in (showText); the event
+// is content, so it gets the fade/slide/marquee treatment (showFadeFrame).
 void showAlert(const char *source, const String &event) {
   if (!event.length()) return;
   setBrightnessBoth(BRIGHT_FULL);
   blink(true);
   showText(source, -1, 1200);
-  showText(event, -1, 2500);
   blink(false);
-  g_frame = "        ";
+  showFadeFrame(event, 2500);
 }
 
 
@@ -480,7 +543,10 @@ void showAlert(const char *source, const String &event) {
 //  blooms into a star), '0' call ok but nothing (a ring closes around the
 //  dash, then the dash dissolves), 'X' error (the dash tips over into an
 //  X) -- and the decimal point goes dark. progReset() at the top of the
-//  fetch section each pass; progBegin()/progEnd() wrap each call.
+//  fetch section each pass; progBegin()/progEnd() wrap each call. More than
+//  8 HTTP calls in one pass (there's more feeds than columns now) wraps the
+//  bar back to column 0 via progReset() rather than freezing on a full bar
+//  while the remaining calls silently run with no visible progress.
 
 // 14-seg building blocks (segment names per Adafruit_LEDBackpack.h).
 #define SEG_MID    (ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2)   // the dash
@@ -519,7 +585,7 @@ void progReset() {
 }
 
 void progBegin() {
-  if (g_progN >= 8) return;
+  if (g_progN >= 8) progReset();  // ran past the last column -- clear and continue
   g_prog[g_progN] = '-';
   setBrightnessBoth(BRIGHT_MIN);
   writeRawFrame(g_prog, g_progN);  // dp lit = "working"
@@ -1029,37 +1095,6 @@ void lookupRoute(Plane &p) {
   progEnd(pc);
 }
 
-// Like showFrame(), but for plane details that can run longer than 8 columns
-// (airline names, "FROM ..." origins): fade down, slide the first 8 columns
-// in, fade back up and hold -- then, if there's more text, keep marqueeing it
-// across at full brightness before the next field fades down in turn.
-void showPlaneFrame(String text, int holdMs = 2000, int stepMs = 45) {
-  String first = text.substring(0, 8);
-  while (first.length() < 8) first += " ";
-
-  fadeBrightnessBoth(BRIGHT_DIM, 8);
-
-  String buf = g_frame + first;
-  for (int i = 1; i <= 8; i++) {
-    writeRawFrame(buf.substring(i, i + 8), -1);
-    delay(stepMs);
-  }
-  g_frame = first;
-
-  fadeBrightnessBoth(BRIGHT_FULL, 14);
-  delay(holdMs);
-
-  if (text.length() > 8) {
-    for (int i = 1; i <= text.length() - 8; i++) {
-      String frame = text.substring(i, i + 8);
-      writeRawFrame(frame, -1);
-      delay(200);
-    }
-    g_frame = text.substring(text.length() - 8);
-    delay(1000);
-  }
-}
-
 // One plane pass. Every field fades/slides in and out just like the train
 // and bus frames, instead of snapping straight to the new text.
 void showPlane(const Plane &p) {
@@ -1071,26 +1106,26 @@ void showPlane(const Plane &p) {
       isAlpha(flight[0]) && isAlpha(flight[1]) && isAlpha(flight[2])) {
     flight = flight.substring(0, 3) + " " + flight.substring(3);
   }
-  showPlaneFrame(flight, 3000);
+  showFadeFrame(flight, 3000);
 
-  showPlaneFrame(p.airline.length() ? p.airline : "Unknown");
+  showFadeFrame(p.airline.length() ? p.airline : "Unknown");
 
   if (icacoLookup.count(p.typeCode))
-    showPlaneFrame(icacoLookup[p.typeCode]);
+    showFadeFrame(icacoLookup[p.typeCode]);
   else if (p.typeCode.length())
-    showPlaneFrame(p.typeCode);
+    showFadeFrame(p.typeCode);
 
   if (p.altFt > 0) {
     char alt[16];
     snprintf(alt, sizeof(alt), "%ld FT", p.altFt);
-    showPlaneFrame(alt);
+    showFadeFrame(alt);
   }
 
   if (p.origin.length())
-    showPlaneFrame("FROM " + p.origin);
+    showFadeFrame("FROM " + p.origin);
 
   // show the flight one last time before fading out, so the user can read it
-  showPlaneFrame(flight, 3000);
+  showFadeFrame(flight, 3000);
 }
 
 
@@ -1391,39 +1426,10 @@ void fetchWeatherAlert() {
 
 float cToF(float c) { return c * 9.0f / 5.0f + 32.0f; }
 
-// Common NWS shortForecast words -> compact abbreviations, applied in order.
-// Whatever's left after that still gets truncated to 8 cols like anything
-// else that runs long here -- a compound forecast like "Partly Cloudy then
-// Chance Rain Showers" won't fully fit either way, abbreviated or not.
-struct WxAbbrev { const char *word; const char *abbr; };
-const WxAbbrev WX_ABBREVS[] = {
-  {"Thunderstorms", "T-storms"},  // the common shorthand -- already mixed case
-  {"Chance",        "Chc"},
-  {"Slight",        "Slgt"},
-  {"Likely",        "Lkly"},
-  {"Isolated",      "Isol"},
-  {"Scattered",     "Sct"},
-  {"Widespread",    "Wide"},
-  {"Mostly",        "Most"},
-  {"Partly",        "Ptly"},
-  {"Cloudy",        "Cldy"},
-  {"Sunny",         "Sun"},
-  {"Clear",         "Clr"},
-  {"Freezing",      "Fz"},
-  {"Showers",       "Shwrs"},
-  {"Drizzle",       "Drzl"},
-  {"Blowing",       "Blwg"},
-  {"Patchy",        "Pchy"},
-  {" And ",         "/"},
-  {" and ",         "/"},
-  {" then ",        "/"},
-};
-#define NUM_WX_ABBREVS (sizeof(WX_ABBREVS) / sizeof(WX_ABBREVS[0]))
-
-String abbreviateForecast(String s) {
-  for (size_t i = 0; i < NUM_WX_ABBREVS; i++) s.replace(WX_ABBREVS[i].word, WX_ABBREVS[i].abbr);
-  return s;  // leftovers (Rain, Snow, Fog, ...) stay in NWS's own natural Title Case
-}
+// WX conditions/forecast text scrolls rather than getting truncated (see
+// showWxNow()/showWxForecast() below), so it's shown in full, in NWS's own
+// mixed case -- abbreviating it used to shorten the scroll but made it read
+// as cryptic fragments ("Chc T-storms/Sct Shwrs") rather than words.
 
 struct WxNow {
   float  tempF     = 0;
@@ -1493,10 +1499,10 @@ void fetchWxNow() {
 }
 
 // Header, temp, feels-like (only when it actually differs), dew point, then
-// the conditions text (abbreviated, same as the forecast periods below).
-// Conditions text is free-form/variable-length (unlike the tag+number frames
-// above it), so it scrolls like the quake line or plane details rather than
-// getting silently truncated at 8 columns.
+// the conditions text, in NWS's own natural mixed case. Conditions text is
+// free-form/variable-length (unlike the tag+number frames above it), so it
+// gets the fade/slide/marquee treatment like the quake line or plane details
+// rather than getting silently truncated at 8 columns.
 void showWxNow() {
   if (!g_wxNow.valid) return;
 
@@ -1515,15 +1521,16 @@ void showWxNow() {
   showFrame(frame, 1300);
 
   if (g_wxNow.conditions.length()) {
-    showText(abbreviateForecast(g_wxNow.conditions), -1, 2000);
+    showFadeFrame(g_wxNow.conditions, 2000);
   }
 }
 
 struct WxForecastPeriod {
   String name;           // NWS's own period name, e.g. "Tonight" -- these are
                           // relative to now, not fixed daily slots, so we show
-                          // it as-is rather than guessing "today/tonight/tomorrow"
-  String shortForecast;  // abbreviated for display
+                          // it as-is (aside from case) rather than guessing
+                          // "today/tonight/tomorrow"
+  String shortForecast;
 };
 WxForecastPeriod g_wxForecast[WXFC_PERIODS];
 bool             g_haveWxForecast = false;
@@ -1561,7 +1568,7 @@ void fetchWxForecast() {
   for (JsonObject p : doc["properties"]["periods"].as<JsonArray>()) {
     if (n >= WXFC_PERIODS) break;
     g_wxForecast[n].name          = String(p["name"] | "");
-    g_wxForecast[n].shortForecast = abbreviateForecast(String(p["shortForecast"] | ""));
+    g_wxForecast[n].shortForecast = String(p["shortForecast"] | "");
     n++;
   }
   g_haveWxForecast = (n > 0);
@@ -1569,18 +1576,105 @@ void fetchWxForecast() {
   progEnd(n > 0 ? '*' : '0');
 }
 
-// Two frames per period: its name in NWS's own natural case (e.g. "Tonight",
-// "This Afternoon"), then its abbreviated shortForecast. Both are free-form/
-// variable-length text (period names run well past 8 columns, e.g. "This
-// Afternoon" or "Sunday Night"), so both scroll rather than getting silently
-// truncated.
+// Two frames per period: its name (e.g. "Tonight", "This Afternoon") as a
+// header-style label, then its shortForecast as content -- both can run well
+// past 8 columns (period names like "This Afternoon" or "Sunday Night"
+// included), so neither gets silently truncated; the label just snaps in
+// like other header tags, the forecast text gets the fade/slide/marquee
+// treatment like the conditions text above.
 void showWxForecast() {
   if (!g_haveWxForecast) return;
   for (int i = 0; i < WXFC_PERIODS; i++) {
     if (!g_wxForecast[i].name.length()) continue;
     showText(g_wxForecast[i].name, -1, 1800);
-    showText(g_wxForecast[i].shortForecast, -1, 2000);
+    showFadeFrame(g_wxForecast[i].shortForecast, 2000);
   }
+}
+
+
+// --- Daily horoscope (novelty, not a real feed) -----------------------------
+// freehoroscopeapi.com, no key needed. Paragraph-length prose per sign, same
+// scrolling treatment as the WX conditions text above. Only three signs are
+// fetched -- Virgo, Capricorn, Aquarius -- and showHoroscope() below picks one
+// of them at random each time it's called, rather than cycling through all
+// three, so which sign shows up varies day to day. See HOROSCOPE_SHOW_PCT for
+// how often this appears in the rotation at all.
+#define HOROSCOPE_URL_BASE   "https://freehoroscopeapi.com/api/v1/get-horoscope/daily?day=TODAY&sign="
+#define HOROSCOPE_REFETCH_MS 21600000   // 6h -- content only actually changes once/day
+#define HOROSCOPE_SHOW_PCT   5          // % chance per cycle that showHoroscope() shows anything
+
+struct Horoscope {
+  const char *sign;   // API param
+  const char *label;  // display header
+  String      text;
+  bool        valid;
+};
+Horoscope g_horoscopes[] = {
+  {"virgo",     "VIRGO",     "", false},
+  {"capricorn", "CAPRICORN", "", false},
+  {"aquarius",  "AQUARIUS",  "", false},
+};
+#define NUM_HOROSCOPES (sizeof(g_horoscopes) / sizeof(g_horoscopes[0]))
+
+void fetchHoroscopes() {
+  for (size_t i = 0; i < NUM_HOROSCOPES; i++) {
+    progBegin();
+
+    HTTPClient http;
+    http.setUserAgent(USER_AGENT);
+    http.setConnectTimeout(4000);
+    http.setTimeout(5000);
+    http.begin(String(HOROSCOPE_URL_BASE) + g_horoscopes[i].sign);
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+      Serial.printf("HOROSCOPE %s HTTP %d\n", g_horoscopes[i].sign, code);
+      http.end();
+      progEnd('X');
+      continue;
+    }
+    String payload = http.getString();
+    http.end();
+
+    JsonDocument filter;
+    filter["data"]["horoscope"] = true;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+      Serial.printf("HOROSCOPE %s JSON parse error\n", g_horoscopes[i].sign);
+      progEnd('X');
+      continue;
+    }
+
+    g_horoscopes[i].text  = String(doc["data"]["horoscope"] | "");
+    g_horoscopes[i].valid = g_horoscopes[i].text.length() > 0;
+    Serial.printf("HOROSCOPE %s: %s\n", g_horoscopes[i].sign,
+        g_horoscopes[i].valid ? "ok" : "empty");
+    progEnd(g_horoscopes[i].valid ? '*' : '0');
+  }
+}
+
+// Rolls HOROSCOPE_SHOW_PCT% each call; on a hit, shows one randomly-picked
+// sign's header then its full horoscope text (scrolls, like WX conditions).
+// The very first time this ever has data to show, it shows unconditionally
+// (skipping the dice roll) -- lets you confirm the feed actually works
+// without waiting out a 1-in-20 chance. Every call after that is back to the
+// normal HOROSCOPE_SHOW_PCT odds.
+void showHoroscope() {
+  static bool everShown = false;
+
+  if (everShown && (int)random(100) >= HOROSCOPE_SHOW_PCT) return;
+
+  int valid[NUM_HOROSCOPES];
+  int numValid = 0;
+  for (size_t i = 0; i < NUM_HOROSCOPES; i++) {
+    if (g_horoscopes[i].valid) valid[numValid++] = i;
+  }
+  if (numValid == 0) return;
+
+  everShown = true;
+  Horoscope &h = g_horoscopes[valid[random(numValid)]];
+  showFrame(h.label, 1300);
+  showFadeFrame(h.text, 2500);
 }
 
 
@@ -2233,9 +2327,8 @@ void setup() {
 
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
-  showText("FTRAIN +");
-  showText("PLANES");
-  showText(" V 5.5");
+  showText("Andy's Bullshit Display");
+  showText(" V 6.1");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -2378,6 +2471,10 @@ void loop() {
       static RefetchTimer nhcTimer;
       if (nhcTimer.due(NHC_REFETCH_MS)) fetchHurricane();
 
+      // --- Horoscope: refresh the day's prose on its own (slow) clock ------
+      static RefetchTimer horoscopeTimer;
+      if (horoscopeTimer.due(HOROSCOPE_REFETCH_MS)) fetchHoroscopes();
+
       // If we hit the network this pass, hold the finished bar a beat, then let
       // the first real frame scroll it away.
       if (progRan()) {
@@ -2393,8 +2490,9 @@ void loop() {
 
       // Always show Weather alerts, NYC OEM alerts, and Tokyo quakes if present
 
-      // weather alert, source tag then just the title
-      showAlert("NWS", g_wxAlert.event);
+      // weather alert, source tag then just the title. Header is centered
+      // ("-=NWS=-") rather than left-justified like the other source tags.
+      showAlert(center8("-=NWS=-").c_str(), g_wxAlert.event);
 
       // NYC OEM alert (only ever set when capIsHighUrgency() said yes, and
       // only from the English-language copy -- see oemIsEnglish()). Show
@@ -2417,11 +2515,9 @@ void loop() {
 
       // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
       if (g_quakeLine.length()) {
-        setBrightnessBoth(BRIGHT_FULL);
         blink(true);
-        showText(g_quakeLine, -1, 2500);
+        showFadeFrame(g_quakeLine, 2500);
         blink(false);
-        g_frame = "        ";
       }
 
       // then if there's a plane, show just the plane because that's what's cool.
@@ -2452,6 +2548,9 @@ void loop() {
         // ...then current conditions and the short forecast.
         showWxNow();
         showWxForecast();
+
+        // ...then, rarely, a random sign's daily horoscope.
+        showHoroscope();
       }
 
     } else {
