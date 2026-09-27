@@ -108,10 +108,10 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   sooner (`Full 13d`) — all computed locally from a reference new moon and
   the synodic month length, no network call.
 - **Sunrise/sunset**: `Sunrise` / `Sunset` headers then the time
-  (`6:42am`), for home's coordinates via
+  (`6-42am`), for home's coordinates via
   [sunrise-sunset.org](https://sunrise-sunset.org/).
 - **Tide**: `High` or `Low` then the next tide's time and height
-  (`3:45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
+  (`3-45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
 - **Magic 8 Ball**: a `-* Magic 8 Ball *-` intro, then a random answer
   (classic or snarky) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
@@ -574,6 +574,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.3
+ - Sep 27, 2026
+ - Sunrise/sunset and tide times use a dash (`6-42am`); the colon drew as a
+   vertical bar.
  - version 7.2
  - Sep 27, 2026
  - Each cycle picks its two random feeds first, then fetches only the alerts,

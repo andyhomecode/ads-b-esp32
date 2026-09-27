@@ -2054,7 +2054,7 @@ void fetchSunTimes() {
   progEnd(g_sun.valid ? '*' : 'X');
 }
 
-// Epoch -> "6:42am", NY local, via the TZ set up in setup() -- always <=7
+// Epoch -> "6-42am", NY local, via the TZ set up in setup() -- always <=7
 // chars, so this never needs to scroll.
 String hhmmAmPm(long epoch) {
   time_t t = (time_t)epoch;
@@ -2063,7 +2063,7 @@ String hhmmAmPm(long epoch) {
   int h = tmLocal.tm_hour % 12;
   if (h == 0) h = 12;
   char buf[8];
-  snprintf(buf, sizeof(buf), "%d:%02d%s", h, tmLocal.tm_min, tmLocal.tm_hour < 12 ? "am" : "pm");
+  snprintf(buf, sizeof(buf), "%d-%02d%s", h, tmLocal.tm_min, tmLocal.tm_hour < 12 ? "am" : "pm");
   return String(buf);
 }
 
@@ -2179,7 +2179,7 @@ bool showTide(long nowEpoch) {
 
   showFrame(next->type == 'H' ? "High" : "Low", 1300);
   char frame[20];
-  snprintf(frame, sizeof(frame), "%d:%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
+  snprintf(frame, sizeof(frame), "%d-%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
   showFadeFrame(frame, 2200);
   return true;
 }
