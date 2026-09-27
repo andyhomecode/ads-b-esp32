@@ -1941,6 +1941,7 @@ const char *const MAGIC8_ANSWERS[] = {
 #define NUM_MAGIC8_ANSWERS (sizeof(MAGIC8_ANSWERS) / sizeof(MAGIC8_ANSWERS[0]))
 
 bool showMagic8() {
+  showFadeFrame("-* Magic 8 Ball *-", 1000);
   showNoiseFrame(MAGIC8_ANSWERS[random(NUM_MAGIC8_ANSWERS)], 1500);
   return true;
 }
@@ -2766,54 +2767,31 @@ bool showHurricane() {
 // | |__| |_| | |\  | |___  | |
 // |_____\___/|_| \_|_____| |_|
 //
-// NASA EONET (Earth Observatory Natural Event Tracker): curated natural events
-// worldwide, free, no key. Four narrow queries rather than one -- the
-// unfiltered open-events list is ~5 MB. Two gotchas:
-//  - Events are rarely closed (2025 NJ wildfires still read `closed: null`),
-//    so freshness comes from `days=` (last-update window), not `status=open`.
-//  - `days=` doesn't trim an event's `geometry[]` history -- a tracked iceberg
-//    carries ~50 points and the iceberg query runs ~85 KB -- so responses are
-//    parsed straight off the stream through a filter instead of buffered into
-//    a String. useHTTP10() keeps the server from chunk-encoding the body,
-//    which ArduinoJson can't read off a raw stream.
-// Not an alerting feed: NASA curates with hours-to-days of lag, and it carries
-// no earthquakes at all (USGS stays the Tokyo quake source).
-//
-// Two display feeds: a nearby wildfire (smoke over the city), and one
-// worldwide tidbit picked at random from the newest volcano eruption,
-// strongest storm, and biggest iceberg.
-#define EONET_URL_BASE    "https://eonet.gsfc.nasa.gov/api/v3/events?"
-// bbox is minLon,maxLat,maxLon,minLat -- roughly 200 mi around home
-#define EONET_FIRE_URL    EONET_URL_BASE "category=wildfires&bbox=-77.8,43.6,-70.2,37.8&days=7"
-#define EONET_VOLCANO_URL EONET_URL_BASE "category=volcanoes&days=7"
-#define EONET_STORM_URL   EONET_URL_BASE "category=severeStorms&status=open&days=2"
-#define EONET_ICE_URL     EONET_URL_BASE "category=seaLakeIce&status=open&days=30"
-#define EONET_REFETCH_MS  3600000     // 1h -- NASA's own lag is hours; API allows 60 req/h
+// NASA EONET (Earth Observatory Natural Event Tracker), free, no key -- used
+// only for the biggest open Antarctic iceberg. Gotchas:
+//  - `days=` (last-update window) doesn't trim an event's `geometry[]` track
+//    history, so a tracked berg carries ~50 points. `magMin=` keeps only the
+//    giants (~18 KB instead of ~94 KB for all of them), and the response is
+//    still parsed straight off the stream through a filter rather than
+//    buffered into a String. useHTTP10() keeps the server from
+//    chunk-encoding the body, which ArduinoJson can't read off a raw stream.
+//  - The National Ice Center updates berg sizes every few days, so one fetch
+//    a day is plenty.
+#define EONET_ICE_URL     "https://eonet.gsfc.nasa.gov/api/v3/events?" \
+                          "category=seaLakeIce&status=open&days=30&magID=sq_NM&magMin=300"
+#define EONET_REFETCH_MS  86400000    // 24h
 #define MANHATTAN_SQMI    22.8f       // for iceberg scale
 
-struct EonetEvent {
-  String title;
-  float  mag = 0;       // magnitudeValue of the latest geometry point (0 if null)
-  String unit;          // "acres", "hectare", "kts", "NM^2", ...
-  long   epoch = 0;     // date of the latest geometry point
-  float  lat = 0, lon = 0;
+struct Iceberg {
+  String name;          // "A81"
+  float  sqnm = 0;      // area of the latest geometry point, NM^2
   bool   valid = false;
 };
-EonetEvent g_eoFire, g_eoVolcano, g_eoStorm, g_eoIce;
+Iceberg g_iceberg;
 
-enum EonetPick { EO_NEAREST, EO_NEWEST, EO_BIGGEST };
-
-// EONET titles carry raw HTML entities ("Danny&#039;s Wildfire").
-String eonetCleanTitle(String t) {
-  t.replace("&#039;", "'");
-  t.replace("&quot;", "\"");
-  t.replace("&amp;", "&");
-  return t;
-}
-
-// One query -> the single event `pick` prefers, into `out`. Keeps the last
-// data on an HTTP/parse error; clears it on an empty-but-OK response.
-void fetchEonetOne(const char *url, EonetPick pick, EonetEvent &out) {
+// Keeps the last data on an HTTP/parse error; clears it on an empty-but-OK
+// response.
+void fetchIceberg() {
   progBegin();
 
   HTTPClient http;
@@ -2821,7 +2799,7 @@ void fetchEonetOne(const char *url, EonetPick pick, EonetEvent &out) {
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
   http.setTimeout(8000);
-  http.begin(url);
+  http.begin(EONET_ICE_URL);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
     Serial.printf("EONET HTTP %d\n", code);
@@ -2833,9 +2811,6 @@ void fetchEonetOne(const char *url, EonetPick pick, EonetEvent &out) {
   JsonDocument filter;
   filter["events"][0]["title"]                         = true;
   filter["events"][0]["geometry"][0]["magnitudeValue"] = true;
-  filter["events"][0]["geometry"][0]["magnitudeUnit"]  = true;
-  filter["events"][0]["geometry"][0]["date"]           = true;
-  if (pick == EO_NEAREST) filter["events"][0]["geometry"][0]["coordinates"] = true;
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getStream(),
@@ -2847,110 +2822,38 @@ void fetchEonetOne(const char *url, EonetPick pick, EonetEvent &out) {
     return;
   }
 
-  out = EonetEvent();
-  float bestMi = -1;
+  g_iceberg = Iceberg();
   for (JsonObject e : doc["events"].as<JsonArray>()) {
     JsonArray geo = e["geometry"];
     if (geo.size() == 0) continue;
-    JsonObject g = geo[geo.size() - 1];  // points are oldest-first
+    float sqnm = geo[geo.size() - 1]["magnitudeValue"] | 0.0f;  // oldest-first
+    if (g_iceberg.valid && sqnm <= g_iceberg.sqnm) continue;
 
-    EonetEvent ev;
-    ev.title = eonetCleanTitle(String(e["title"] | ""));
-    ev.mag   = g["magnitudeValue"] | 0.0f;
-    ev.unit  = String(g["magnitudeUnit"] | "");
-    ev.epoch = isoToEpoch(g["date"] | "");
-    ev.lon   = g["coordinates"][0] | 0.0f;  // GeoJSON order: lon, lat
-    ev.lat   = g["coordinates"][1] | 0.0f;  // (0,0 for a Polygon -- skipped below)
-    ev.valid = true;
-
-    if (pick == EO_NEAREST) {
-      if (ev.lat == 0 && ev.lon == 0) continue;
-      float mi = haversineKm(HOME_LAT, HOME_LON, ev.lat, ev.lon) * 0.621371f;
-      if (bestMi >= 0 && mi >= bestMi) continue;
-      bestMi = mi;
-    } else if (pick == EO_NEWEST) {
-      if (out.valid && ev.epoch <= out.epoch) continue;
-    } else {
-      if (out.valid && ev.mag <= out.mag) continue;
-    }
-    out = ev;
-  }
-
-  Serial.printf("EONET: %s\n", out.valid ? out.title.c_str() : "(none)");
-  progEnd(out.valid ? '*' : '0');
-}
-
-void fetchEonet() {
-  fetchEonetOne(EONET_FIRE_URL,    EO_NEAREST, g_eoFire);
-  fetchEonetOne(EONET_VOLCANO_URL, EO_NEWEST,  g_eoVolcano);
-  fetchEonetOne(EONET_STORM_URL,   EO_BIGGEST, g_eoStorm);
-  fetchEonetOne(EONET_ICE_URL,     EO_BIGGEST, g_eoIce);
-}
-
-// Nearest wildfire within ~200 mi: name, size, distance + direction.
-bool showEonetFire() {
-  if (!g_eoFire.valid) return false;
-
-  showFrame("Wildfire", 1300);
-  showFadeFrame(g_eoFire.title, 2000);
-
-  char frame[16];
-  if (g_eoFire.mag > 0) {
-    float acres = g_eoFire.unit == "hectare" ? g_eoFire.mag * 2.47105f : g_eoFire.mag;
-    snprintf(frame, sizeof(frame), "%d ac", (int)acres);
-    showFrame(frame, 1300);
-  }
-  float mi = haversineKm(HOME_LAT, HOME_LON, g_eoFire.lat, g_eoFire.lon) * 0.621371f;
-  snprintf(frame, sizeof(frame), "%dmi %s", (int)mi,
-           compass8(bearingDeg(HOME_LAT, HOME_LON, g_eoFire.lat, g_eoFire.lon)));
-  showFrame(frame, 1300);
-  return true;
-}
-
-// One of whichever worldwide tidbits have data, at random.
-bool showEonetTidbit(long nowEpoch) {
-  EonetEvent *pool[3];
-  int n = 0;
-  if (g_eoVolcano.valid) pool[n++] = &g_eoVolcano;
-  if (g_eoStorm.valid)   pool[n++] = &g_eoStorm;
-  if (g_eoIce.valid)     pool[n++] = &g_eoIce;
-  if (n == 0) return false;
-
-  EonetEvent &ev = *pool[random(n)];
-  char frame[20];
-
-  if (&ev == &g_eoVolcano) {
-    showFrame("Volcano", 1300);
-    showFadeFrame(ev.title, 2000);  // "Kikai Volcano, Japan"
-    long days = (nowEpoch - ev.epoch) / 86400;
-    if (days <= 0) snprintf(frame, sizeof(frame), "today");
-    else           snprintf(frame, sizeof(frame), "%ldd ago", days);
-    showFrame(frame, 1300);
-
-  } else if (&ev == &g_eoStorm) {
-    showFrame("Storm", 1300);
-    showFadeFrame(ev.title, 2000);  // "Typhoon Surigae"
-    int cat = hurricaneCategory((int)ev.mag);  // EONET storm magnitudes are kts
-    snprintf(frame, sizeof(frame), "%dmph", (int)(ev.mag * 1.15078f));
-    showFrame(frame, 1300);
-    if (cat > 0) {
-      snprintf(frame, sizeof(frame), "CAT %d", cat);
-      showFrame(frame, 1300);
-    }
-
-  } else {
-    String name = ev.title;
+    String name = e["title"] | "";
     if (name.startsWith("Iceberg ")) name = name.substring(8);
-    showFrame("Iceberg", 1300);
-    showFrame(name, 1300);  // "A81"
-    float sqmi = ev.unit == "NM^2" ? ev.mag * 1.32432f : ev.mag;
-    snprintf(frame, sizeof(frame), "%d sqmi", (int)sqmi);
-    showFrame(frame, 1300);
-    int manhattans = (int)(sqmi / MANHATTAN_SQMI + 0.5f);
-    if (manhattans >= 2) {
-      snprintf(frame, sizeof(frame), "%dx Manhattan", manhattans);
-      showFadeFrame(frame, 1500);
-    }
+    g_iceberg.name  = name;
+    g_iceberg.sqnm  = sqnm;
+    g_iceberg.valid = true;
+  }
+
+  Serial.printf("EONET: %s\n", g_iceberg.valid ? g_iceberg.name.c_str() : "(none)");
+  progEnd(g_iceberg.valid ? '*' : '0');
+}
+
+// Biggest open iceberg: name, area, and how many Manhattans that is.
+bool showIceberg() {
+  if (!g_iceberg.valid) return false;
+
+  char frame[20];
+  showFrame("Iceberg", 1300);
+  showFrame(g_iceberg.name, 1300);  // "A81"
+  float sqmi = g_iceberg.sqnm * 1.32432f;
+  snprintf(frame, sizeof(frame), "%d sqmi", (int)sqmi);
+  showFrame(frame, 1300);
+  int manhattans = (int)(sqmi / MANHATTAN_SQMI + 0.5f);
+  if (manhattans >= 2) {
+    snprintf(frame, sizeof(frame), "%dx Manhattan", manhattans);
+    showFadeFrame(frame, 1500);
   }
   return true;
 }
@@ -3173,8 +3076,7 @@ const FeedShow FEEDS[] = {
   [](long now) { return showTide(now); },
   [](long)     { return showIss(); },           // only while overhead
   [](long)     { return showHurricane(); },
-  [](long)     { return showEonetFire(); },     // only within ~200 mi
-  [](long now) { return showEonetTidbit(now); },
+  [](long)     { return showIceberg(); },
   [](long)     { return showHoroscope(); },
   [](long)     { return showMagic8(); },
   [](long now) { return showHoliday(now); },
@@ -3313,9 +3215,9 @@ void loop() {
       static RefetchTimer nhcTimer;
       if (nhcTimer.due(NHC_REFETCH_MS)) fetchHurricane();
 
-      // --- NASA EONET: nearby wildfire + worldwide natural-event tidbits ---
+      // --- NASA EONET: biggest Antarctic iceberg, once a day ----------------
       static RefetchTimer eonetTimer;
-      if (eonetTimer.due(EONET_REFETCH_MS)) fetchEonet();
+      if (eonetTimer.due(EONET_REFETCH_MS)) fetchIceberg();
 
       // --- Horoscope: refresh the day's prose on its own (slow) clock ------
       static RefetchTimer horoscopeTimer;

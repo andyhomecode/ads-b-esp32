@@ -111,14 +111,13 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [sunrise-sunset.org](https://sunrise-sunset.org/).
 - **Tide**: `High` or `Low` then the next tide's time and height
   (`3:45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
-- **Magic 8 Ball**: a random answer (classic or snarky) scrambles in through
-  segment noise, then scrolls.
+- **Magic 8 Ball**: a `-* Magic 8 Ball *-` intro, then a random answer
+  (classic or snarky) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
   (nationwide, or NY specifically), then a countdown (`29d`), via
   [Nager.Date](https://date.nager.at/).
-- **NASA EONET**: any wildfire within ~200 mi (name, acres, distance/direction);
-  and, separately, one random worldwide tidbit: newest volcano eruption,
-  strongest storm, or biggest iceberg.
+- **Iceberg**: the biggest open Antarctic iceberg (name, sq mi, how many
+  Manhattans), via NASA EONET.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
   the new data in, then fades back up — applies to every data field, not just
   fixed-width ones; longer content (alert text, WX conditions/forecast, the
@@ -515,9 +514,8 @@ More pictures coming
   `US-NY`, so a state-specific holiday elsewhere in the list doesn't get
   shown as if it applied at home. Refreshed every 12h.
 - **Natural events**: [`eonet.gsfc.nasa.gov/api/v3/events`](https://eonet.gsfc.nasa.gov/docs/v3)
-  — NASA EONET, free, no key, 60 req/h. Four narrow queries (the unfiltered
-  list is ~5 MB). Events rarely get closed, so freshness comes from `days=`,
-  not `status=open`. No earthquakes in this feed; USGS stays the quake source.
+  — NASA EONET, free, no key. Icebergs only, `magMin=` filtered to the
+  giants; fetched once a day.
 
 ### NYC OEM alert categories
 
@@ -575,6 +573,11 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.1
+ - Sep 27, 2026
+ - EONET trimmed to one daily query for the biggest iceberg; dropped the
+   wildfire, volcano, and storm queries (too slow on the ESP32).
+ - Magic 8 Ball gets a `-* Magic 8 Ball *-` intro.
  - version 7.0
  - Sep 27, 2026
  - Display cycle is now: urgent alerts, then the plane (no longer exclusive),
