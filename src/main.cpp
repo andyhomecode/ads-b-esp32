@@ -720,10 +720,9 @@ unsigned long g_lastTrainFetchMs = 0;
 bool         g_haveTrainData  = false;
 
 // Hit the JSON proxy and refill g_trains/g_trainCount. Unlike the other
-// feeds' RefetchTimer-gated fetches, this keeps retrying every pass (not
-// just every REFETCH_MS) until the first parse succeeds -- same cadence as
-// the original inline loop() code, since a stale/empty countdown is worse
-// than an extra request.
+// feeds' RefetchTimer-gated fetches, this keeps retrying every time the
+// trains get picked (not just every REFETCH_MS) until the first parse
+// succeeds, since a stale/empty countdown is worse than an extra request.
 void fetchTrains() {
   if (g_haveTrainData && millis() - g_lastTrainFetchMs < REFETCH_MS) return;
 
@@ -3059,42 +3058,6 @@ void setup() {
   }
 }
 
-// Everything that isn't an urgent alert or the plane. Each show* draws
-// nothing and returns false when it has no data, so walking a shuffled copy
-// of this table until RANDOM_FEEDS_PER_CYCLE of them have shown only ever
-// lands on feeds with something to say.
-#define RANDOM_FEEDS_PER_CYCLE 2
-typedef bool (*FeedShow)(long nowEpoch);
-const FeedShow FEEDS[] = {
-  [](long now) { return showArrivals(now); },   // F trains
-  [](long now) { return showBuses(now); },      // M14A, M9
-  [](long)     { return showCitibike(); },
-  [](long)     { return showWxNow(); },
-  [](long)     { return showWxForecast(); },
-  [](long now) { return showMoonPhase(now); },
-  [](long)     { return showSunTimes(); },
-  [](long now) { return showTide(now); },
-  [](long)     { return showIss(); },           // only while overhead
-  [](long)     { return showHurricane(); },
-  [](long)     { return showIceberg(); },
-  [](long)     { return showHoroscope(); },
-  [](long)     { return showMagic8(); },
-  [](long now) { return showHoliday(now); },
-};
-#define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
-
-void showRandomFeeds(long nowEpoch) {
-  size_t order[NUM_FEEDS];
-  for (size_t i = 0; i < NUM_FEEDS; i++) order[i] = i;
-  for (size_t i = NUM_FEEDS - 1; i > 0; i--) {  // Fisher-Yates
-    size_t j = random(i + 1);
-    size_t t = order[i]; order[i] = order[j]; order[j] = t;
-  }
-  int shown = 0;
-  for (size_t i = 0; i < NUM_FEEDS && shown < RANDOM_FEEDS_PER_CYCLE; i++)
-    if (FEEDS[order[i]](nowEpoch)) shown++;
-}
-
 // Fires true the first time it's called, then again once every intervalMs --
 // replaces the hand-copied "static lastMs + static first" pair each feed's
 // refetch gate used to carry.
@@ -3108,6 +3071,75 @@ struct RefetchTimer {
     return true;
   }
 };
+
+// Everything that isn't an urgent alert or the plane. Each cycle picks
+// RANDOM_FEEDS_PER_CYCLE of these up front and runs only their fetches, so a
+// pass never waits on an API call for a feed it isn't about to show. `has`
+// says whether the feed has anything to draw once fetched (ISS and the
+// hurricane are usually empty), so the picker can skip to the next one.
+// fetch is nullptr for feeds computed locally; refetchMs 0 means the fetch
+// gates itself.
+#define RANDOM_FEEDS_PER_CYCLE 2
+typedef bool (*FeedShow)(long nowEpoch);
+struct Feed {
+  FeedShow      show;
+  bool          (*has)();
+  void          (*fetch)();
+  unsigned long refetchMs;
+};
+const Feed FEEDS[] = {
+  { [](long now) { return showArrivals(now); },  // F trains
+    [] { return g_haveTrainData; },       fetchTrains,      0 },
+  { [](long now) { return showBuses(now); },     // M14A, M9
+    [] { for (size_t i = 0; i < NUM_BUS_FEEDS; i++) if (g_busCount[i]) return true;
+         return false; },                 fetchBuses,       BUS_REFETCH_MS },
+  { [](long)     { return showCitibike(); },
+    [] { return g_citibikeBikes >= 0; },  fetchCitibike,    CITIBIKE_REFETCH_MS },
+  { [](long)     { return showWxNow(); },
+    [] { return g_wxNow.valid; },         fetchWxNow,       WXNOW_REFETCH_MS },
+  { [](long)     { return showWxForecast(); },
+    [] { return g_haveWxForecast; },      fetchWxForecast,  WXFC_REFETCH_MS },
+  { [](long now) { return showMoonPhase(now); },
+    [] { return true; },                  nullptr,          0 },
+  { [](long)     { return showSunTimes(); },
+    [] { return g_sun.valid; },           fetchSunTimes,    SUN_REFETCH_MS },
+  { [](long now) { return showTide(now); },
+    [] { return g_tideCount > 0; },       fetchTide,        TIDE_REFETCH_MS },
+  { [](long)     { return showIss(); },         // only while overhead
+    [] { return g_issOverhead; },         fetchIss,         ISS_REFETCH_MS },
+  { [](long)     { return showHurricane(); },
+    [] { return g_hurricane.valid; },     fetchHurricane,   NHC_REFETCH_MS },
+  { [](long)     { return showIceberg(); },
+    [] { return g_iceberg.valid; },       fetchIceberg,     EONET_REFETCH_MS },
+  { [](long)     { return showHoroscope(); },
+    [] { for (size_t i = 0; i < NUM_HOROSCOPES; i++) if (g_horoscopes[i].valid) return true;
+         return false; },                 fetchHoroscopes,  HOROSCOPE_REFETCH_MS },
+  { [](long)     { return showMagic8(); },
+    [] { return true; },                  nullptr,          0 },
+  { [](long now) { return showHoliday(now); },
+    [] { return g_holiday.valid; },       fetchHoliday,     HOLIDAY_REFETCH_MS },
+};
+#define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
+
+// Walks a shuffled copy of FEEDS, fetching each candidate if it's due, until
+// RANDOM_FEEDS_PER_CYCLE of them have data. Fills `out` with their indices
+// and returns how many it found.
+int pickFeeds(size_t out[RANDOM_FEEDS_PER_CYCLE]) {
+  static RefetchTimer timers[NUM_FEEDS];
+  size_t order[NUM_FEEDS];
+  for (size_t i = 0; i < NUM_FEEDS; i++) order[i] = i;
+  for (size_t i = NUM_FEEDS - 1; i > 0; i--) {  // Fisher-Yates
+    size_t j = random(i + 1);
+    size_t t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  int picked = 0;
+  for (size_t i = 0; i < NUM_FEEDS && picked < RANDOM_FEEDS_PER_CYCLE; i++) {
+    const Feed &f = FEEDS[order[i]];
+    if (f.fetch && timers[order[i]].due(f.refetchMs)) f.fetch();
+    if (f.has()) out[picked++] = order[i];
+  }
+  return picked;
+}
 
 // **********************************************************
 //  _                   
@@ -3147,14 +3179,27 @@ void loop() {
       //  |_o_______________o______|
       //     O-O               O-O
 
-      // The plan:
-      // - every REFETCH_MS, hit the JSON proxy and cache the next few arrival
-      //   times as absolute epochs
-      // - every pass through loop(), redraw the countdown from that cache so the
-      //   minutes tick down without hammering the server
+      // The plan, each pass:
+      // - pick this cycle's two random feeds (see pickFeeds())
+      // - fetch only what's about to be shown -- alerts, the plane, and those
+      //   two -- each still gated by its own refetch interval
+      // - draw everything from the caches
 
       progReset();  // start a fresh loading clock for whatever fetches fire below
-      fetchTrains();
+
+      // Alerts and the plane show every cycle, so they always fetch (each on
+      // its own clock); the random feeds fetch only when picked below.
+      // --- NWS: refresh the weather alert on its own (slow) clock ---------
+      static RefetchTimer wxTimer;
+      if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
+
+      // --- NYC OEM: refresh the emergency alert on its own (slow) clock ---
+      static RefetchTimer oemTimer;
+      if (oemTimer.due(OEM_REFETCH_MS)) fetchOemAlert();
+
+      // --- USGS: check for a big Tokyo quake -----------------------------
+      static RefetchTimer eqTimer;
+      if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
 
       // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
       // Same decoupled pattern as the trains: poll here, draw from the cache.
@@ -3181,59 +3226,9 @@ void loop() {
         }
       }
 
-      // --- MTA BusTime: refresh the bus list on its own clock -------------
-      static RefetchTimer busTimer;
-      if (busTimer.due(BUS_REFETCH_MS)) fetchBuses();
-
-      // --- NWS: refresh the weather alert on its own (slow) clock ---------
-      static RefetchTimer wxTimer;
-      if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
-
-      // --- NWS: current conditions and short forecast ----------------------
-      static RefetchTimer wxNowTimer;
-      if (wxNowTimer.due(WXNOW_REFETCH_MS)) fetchWxNow();
-      static RefetchTimer wxFcTimer;
-      if (wxFcTimer.due(WXFC_REFETCH_MS)) fetchWxForecast();
-
-      // --- NYC OEM: refresh the emergency alert on its own (slow) clock ---
-      static RefetchTimer oemTimer;
-      if (oemTimer.due(OEM_REFETCH_MS)) fetchOemAlert();
-
-      // --- USGS: check for a big Tokyo quake -----------------------------
-      static RefetchTimer eqTimer;
-      if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
-
-      // --- Citi Bike: refresh dock counts on its own clock ----------------
-      static RefetchTimer citibikeTimer;
-      if (citibikeTimer.due(CITIBIKE_REFETCH_MS)) fetchCitibike();
-
-      // --- ISS: check whether it's roughly overhead ------------------------
-      static RefetchTimer issTimer;
-      if (issTimer.due(ISS_REFETCH_MS)) fetchIss();
-
-      // --- NHC: check for a nearby Atlantic named storm --------------------
-      static RefetchTimer nhcTimer;
-      if (nhcTimer.due(NHC_REFETCH_MS)) fetchHurricane();
-
-      // --- NASA EONET: biggest Antarctic iceberg, once a day ----------------
-      static RefetchTimer eonetTimer;
-      if (eonetTimer.due(EONET_REFETCH_MS)) fetchIceberg();
-
-      // --- Horoscope: refresh the day's prose on its own (slow) clock ------
-      static RefetchTimer horoscopeTimer;
-      if (horoscopeTimer.due(HOROSCOPE_REFETCH_MS)) fetchHoroscopes();
-
-      // --- Sun: refresh sunrise/sunset on its own (slow) clock -------------
-      static RefetchTimer sunTimer;
-      if (sunTimer.due(SUN_REFETCH_MS)) fetchSunTimes();
-
-      // --- Tide: refresh The Battery predictions on its own clock ----------
-      static RefetchTimer tideTimer;
-      if (tideTimer.due(TIDE_REFETCH_MS)) fetchTide();
-
-      // --- Holiday: refresh the next US public holiday on its own clock ----
-      static RefetchTimer holidayTimer;
-      if (holidayTimer.due(HOLIDAY_REFETCH_MS)) fetchHoliday();
+      // --- The two random feeds for this cycle, fetched only if due ---------
+      size_t picks[RANDOM_FEEDS_PER_CYCLE];
+      int numPicks = pickFeeds(picks);
 
       progFinish();  // scramble the loading clock away
 
@@ -3278,8 +3273,8 @@ void loop() {
       // ...then the plane on final, if there is one...
       if (g_plane.valid) showPlane(g_plane);
 
-      // ...then two of everything else, picked at random.
-      showRandomFeeds(nowEpoch);
+      // ...then the two random feeds picked above.
+      for (int i = 0; i < numPicks; i++) FEEDS[picks[i]].show(nowEpoch);
     } else {
       Serial.println("Not connected to Wi-Fi.");
       showText("No Wi-fi");

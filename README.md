@@ -22,7 +22,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
 - **Display cycle**: every cycle shows any urgent alert (NWS, NYC OEM, Tokyo
   quake), then the plane if there is one, then `RANDOM_FEEDS_PER_CYCLE` (2)
-  other feeds picked at random from those with something to show.
+  other feeds picked at random from those with something to show. Only those
+  feeds (plus alerts and the plane) are fetched that cycle.
 - **Plane on approach**: when an `A3` (large / airliner) aircraft is between
   `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the over-Brooklyn box, a
   `*PLANE*` block — callsign (`AAL 1389`), airline, aircraft type (`Airbus
@@ -573,6 +574,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.2
+ - Sep 27, 2026
+ - Each cycle picks its two random feeds first, then fetches only the alerts,
+   the plane, and those two -- no more waiting on APIs for feeds not shown.
  - version 7.1
  - Sep 27, 2026
  - EONET trimmed to one daily query for the biggest iceberg; dropped the
