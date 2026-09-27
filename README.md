@@ -20,13 +20,14 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   up arrowhead (`/|\`) in the bottom half for uptown. So `Fv  2min`, `F^  3min`,
   `Fv  6min`, ... (`F<dir>  NOW` when one's basically here, `NO F TRN` when
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
-- **Plane on approach (takes over the display)**: when an `A3` (large / airliner)
-  aircraft is between `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the
-  over-Brooklyn box, the display shows **only** the `*PLANE*` block —
-  callsign (`AAL 1389`), airline, aircraft type (`Airbus A321`), altitude, and
-  origin (`FROM MIA MIAMI`) — and skips trains, buses, and weather until it
-  passes. Northern-most plane wins (closest to LGA). Everything keeps fetching in
-  the background, so the trains/buses are current the moment the sky clears.
+- **Display cycle**: every cycle shows any urgent alert (NWS, NYC OEM, Tokyo
+  quake), then the plane if there is one, then `RANDOM_FEEDS_PER_CYCLE` (2)
+  other feeds picked at random from those with something to show.
+- **Plane on approach**: when an `A3` (large / airliner) aircraft is between
+  `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the over-Brooklyn box, a
+  `*PLANE*` block — callsign (`AAL 1389`), airline, aircraft type (`Airbus
+  A321`), altitude, and origin (`FROM MIA MIAMI`). Northern-most plane wins
+  (closest to LGA).
 - **Buses**: one block per stop in the `BUS_FEEDS` table — by default the
   **M14A-SBS** at Grand St / Clinton St westbound → Abingdon Sq, and the **M9**
   at Essex St / East Broadway westbound → Battery Park City. It runs through the
@@ -97,10 +98,10 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   at 8 columns, and since it already scrolls there's no need to abbreviate or
   shout it in all-caps. Current conditions checked every 10 min, forecast
   every 30 min.
-- **Daily horoscope** (novelty, not a real feed): daily prose for a random
+- **Daily horoscope** (novelty, not a real feed): first sentence of the day's
+  prose for a random
   sign among Virgo/Capricorn/Aquarius from
-  [freehoroscopeapi.com](https://freehoroscopeapi.com), shown 5% of the time
-  (`HOROSCOPE_SHOW_PCT` in `main.cpp`).
+  [freehoroscopeapi.com](https://freehoroscopeapi.com).
 - **Moon phase**: `Moon` header, then the current phase (`Waxing Gibbous`,
   `Full Moon`, ...), then days until whichever of the next new/full moon is
   sooner (`Full 13d`) — all computed locally from a reference new moon and
@@ -110,10 +111,14 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [sunrise-sunset.org](https://sunrise-sunset.org/).
 - **Tide**: `High` or `Low` then the next tide's time and height
   (`3:45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
-- **Next holiday** (novelty, shown `HOLIDAY_SHOW_PCT` = 20% of the time): a
-  `Holiday` header, the next US public holiday that's actually observed here
+- **Magic 8 Ball**: a random answer (classic or snarky) scrambles in through
+  segment noise, then scrolls.
+- **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
   (nationwide, or NY specifically), then a countdown (`29d`), via
   [Nager.Date](https://date.nager.at/).
+- **NASA EONET**: any wildfire within ~200 mi (name, acres, distance/direction);
+  and, separately, one random worldwide tidbit: newest volcano eruption,
+  strongest storm, or biggest iceberg.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
   the new data in, then fades back up — applies to every data field, not just
   fixed-width ones; longer content (alert text, WX conditions/forecast, the
@@ -124,13 +129,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   its own clock and the display loops off the caches between fetches. A
   failed or empty fetch just leaves that block's last data (or nothing) — the
   other blocks are unaffected.
-- **Fetch progress bar**: the HTTP calls block the loop, so while a fetch cycle
-  runs the display becomes a dim left-to-right bar — one column per call. When a
-  call starts, a `-` with its **decimal point lit** ("working"); when it returns
-  the `-` morphs segment-by-segment into the result and the DP goes dark — `*`
-  got data (the dash blooms into a star), `0` call OK but nothing there (a ring
-  closes around the dash, then the dash dissolves), `X` error (the dash tips over
-  into an X). The finished bar scrolls away as the real frames come back.
+- **Loading clock**: while fetches run, a dim 24h clock (`14-05`) scrambles
+  in through segment noise; one dot steps along the bottom per HTTP call,
+  bouncing off the ends.
 - **NTP time sync**: turns the feed's absolute arrival timestamps into a live
   countdown; falls back to the feed's own `updated` time if NTP doesn't sync.
 - **Dual 14-Segment LED Displays**: shows scrolling text and data.
@@ -277,19 +278,9 @@ More pictures coming
 
 1. Set the mode switch to **RUN** position (HIGH).
 2. The device connects to WiFi, syncs the clock over NTP, and starts fetching arrival data.
-3. **If an airliner is low over Brooklyn on final into LGA**, the display shows
-   only the `*PLANE*` block — callsign, airline, aircraft type, altitude, origin
-   airport — and nothing else until it passes.
-4. **Otherwise** it cycles:
-   - `E B'WAY` (~1s), then the next few F trains either direction, soonest-first,
-     ~2s each as `Fv  2min`, `F^  3min`, ... (down/up arrowhead = downtown/uptown).
-   - For each bus stop with buses tracked (M14A → Abingdon Sq, M9 → Battery Park
-     City), a run through their countdowns: `M14 12mn` / `M9 12min`.
-   - If the NWS has an active alert for the point, the event name, blinking.
-   - If USGS has an M≥4.3 / tsunami Tokyo quake in the last 24 h, one blinking
-     line: `TOKYO EQ M4.7 74 KM E OF TOMIOKA, JAPAN`.
-   Every frame fades down, scrolls the old data out while the new scrolls in,
-   then fades back up.
+3. Each cycle: any urgent alert (NWS, NYC OEM, Tokyo quake), then the
+   `*PLANE*` block if an airliner is on final into LGA, then two random feeds
+   (trains, buses, weather, moon, tide, ...) out of those with data.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
@@ -522,9 +513,11 @@ More pictures coming
   others `Indigenous Peoples' Day`, same date, different `counties` lists) —
   `fetchHoliday()` keeps the first entry that's either `global` or lists
   `US-NY`, so a state-specific holiday elsewhere in the list doesn't get
-  shown as if it applied at home. Refreshed every 12h; shown only
-  `HOLIDAY_SHOW_PCT` (20%) of the time, same novelty treatment as the
-  horoscope.
+  shown as if it applied at home. Refreshed every 12h.
+- **Natural events**: [`eonet.gsfc.nasa.gov/api/v3/events`](https://eonet.gsfc.nasa.gov/docs/v3)
+  — NASA EONET, free, no key, 60 req/h. Four narrow queries (the unfiltered
+  list is ~5 MB). Events rarely get closed, so freshness comes from `days=`,
+  not `status=open`. No earthquakes in this feed; USGS stays the quake source.
 
 ### NYC OEM alert categories
 
@@ -582,6 +575,20 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.0
+ - Sep 27, 2026
+ - Display cycle is now: urgent alerts, then the plane (no longer exclusive),
+   then 2 random feeds with data. Replaces the fixed order and the
+   horoscope/holiday/EONET show percentages.
+ - Added a Magic 8 Ball feed; horoscope trimmed to its first sentence.
+ - version 6.9
+ - Sep 27, 2026
+ - Fetch progress bar replaced with a dim 24h clock that scrambles in/out
+   through segment noise, with one loading dot bouncing along the bottom.
+ - version 6.8
+ - Sep 27, 2026
+ - Added NASA EONET: nearby wildfires, plus a random volcano / storm / iceberg
+   tidbit.
  - version 6.7
  - Sep 13, 2026
  - Added a **next US holiday** novelty feed: `Holiday` header, the next
@@ -756,5 +763,6 @@ Feel free to submit issues or pull requests for improvements!
 - Sunrise/sunset via [sunrise-sunset.org](https://sunrise-sunset.org/).
 - Tide predictions via [NOAA CO-OPS](https://api.tidesandcurrents.noaa.gov/api-helper/documentation.html), station 8518750 (The Battery, NY).
 - Holidays via [Nager.Date](https://date.nager.at/).
+- Natural events via [NASA EONET](https://eonet.gsfc.nasa.gov/).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.

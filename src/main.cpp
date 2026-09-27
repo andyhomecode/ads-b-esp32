@@ -282,7 +282,7 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 // Backpack brightness levels (HT16K33 supports 0-15).
 #define BRIGHT_FULL 15   // parked frame
 #define BRIGHT_DIM   1   // while a frame fades/scrolls in
-#define BRIGHT_MIN   0   // dimmest still-lit level -- the progress bar
+#define BRIGHT_MIN   0   // dimmest still-lit level -- the loading clock
 
 // Two custom 14-segment glyphs for the train direction, carried through the
 // string/scroll pipeline as sentinel bytes: wherever one lands in a frame,
@@ -295,43 +295,38 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 #define GLYPH_UP_CH   '\x02'
 
 
-void writeRawFrame(String text, int dPLocation = -1) {
+// Font lookup only -- never begun, so it never touches the bus. The library's
+// ASCII font table is file-static, so borrow it through writeDigitAscii().
+Adafruit_AlphaNum4 g_fontLookup = Adafruit_AlphaNum4();
 
-  // add spaces to the end so we don't get null
-  // yes, I know this is a terrible hack, and it shouldn't happen,
-  text += "        ";
+// 14-segment bitmask for one character, including the direction-arrow glyphs.
+uint16_t glyphFor(char c) {
+  if (c == GLYPH_DOWN_CH) return GLYPH_DOWN;
+  if (c == GLYPH_UP_CH)   return GLYPH_UP;
+  g_fontLookup.writeDigitAscii(0, c);
+  return g_fontLookup.displaybuffer[0];
+}
 
-  // Clear both displays
-  alpha4_0.clear();
-  alpha4_1.clear();
-
-
-  // Write to Display 1
-  // you can only set one character at one position at a time
-  // and there's 4 characters per display
-  // so go through the first 4 characters of the text, put them in the spots
-  // and if you're on the character where the decimal point is, turn on the bool
-  // It's weird, but that's because there's no ASCII modifier meaning "number or letter with a decimal point"
-  for (int i = 0; i <= 3; i++) {
-    char c = text.charAt(i);
-    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
-      alpha4_0.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
-    else
-      alpha4_0.writeDigitAscii(i, c, i == dPLocation);  // Write each character to the display, if it's the character with the decimal point, show it
+// Raw segment bitmasks for all 8 columns -> both backpacks (columns 0-3 on
+// the first, 4-7 on the second).
+void writeSegs(const uint16_t segs[8]) {
+  for (int i = 0; i < 4; i++) {
+    alpha4_0.writeDigitRaw(i, segs[i]);
+    alpha4_1.writeDigitRaw(i, segs[i + 4]);
   }
-
-  // Write to Display 2
-  for (int i = 0; i <= 3; i++) {
-    char c = text.charAt(i + 4);                            // remember we're showing the next 4 digits
-    if (c == GLYPH_DOWN_CH || c == GLYPH_UP_CH)
-      alpha4_1.writeDigitRaw(i, c == GLYPH_DOWN_CH ? GLYPH_DOWN : GLYPH_UP);
-    else
-      alpha4_1.writeDigitAscii(i, c, (i == dPLocation - 4));  // Write each character to the display, ditto for the decimal point
-  }
-
-  // Update both displays
   alpha4_0.writeDisplay();
   alpha4_1.writeDisplay();
+}
+
+// First 8 characters of text (short text is blank-padded), with the decimal
+// point lit on column dPLocation (-1 = none).
+void writeRawFrame(String text, int dPLocation = -1) {
+  uint16_t segs[8];
+  for (int i = 0; i < 8; i++) {
+    segs[i] = glyphFor(i < (int)text.length() ? text.charAt(i) : ' ');
+    if (i == dPLocation) segs[i] |= ALPHANUM_SEG_DP;
+  }
+  writeSegs(segs);
 }
 
 
@@ -340,7 +335,7 @@ void writeRawFrame(String text, int dPLocation = -1) {
 String g_frame = "        ";
 
 // Actual current backpack brightness, so fades start from where we really are
-// (e.g. the dim progress bar) instead of snapping to full first.
+// (e.g. the dim loading clock) instead of snapping to full first.
 uint8_t g_bright = BRIGHT_FULL;
 
 void setBrightnessBoth(uint8_t b) {
@@ -359,12 +354,12 @@ void fadeBrightnessBoth(int to, int stepMs) {
   setBrightnessBoth(to);
 }
 
-// Fade down to dim, scroll the current frame out to the left while `next` slides
-// in from the right (all at low brightness), then fade back up to full and hold
-// for holdMs.
-void showFrame(String next, int holdMs, int stepMs = 45) {
-  while (next.length() < 8) next += " ";
+// Fade down to dim, then scroll the current frame out to the left while
+// (the first 8 columns of) `next` slides in from the right. Leaves it parked,
+// still dim -- callers decide what brightness to settle at.
+void slideIn(String next, int stepMs = 45) {
   next = next.substring(0, 8);
+  while (next.length() < 8) next += " ";
 
   fadeBrightnessBoth(BRIGHT_DIM, 8);
 
@@ -374,7 +369,11 @@ void showFrame(String next, int holdMs, int stepMs = 45) {
     delay(stepMs);
   }
   g_frame = next;
+}
 
+// slideIn(), then fade back up to full and hold for holdMs.
+void showFrame(String next, int holdMs, int stepMs = 45) {
+  slideIn(next, stepMs);
   fadeBrightnessBoth(BRIGHT_FULL, 14);
   delay(holdMs);
 }
@@ -400,6 +399,18 @@ void showText(String text, int dpLocation = -1, int holdMs = 2000) {
 }
 
 
+// Marquee whatever's past text's first 8 columns across at full brightness,
+// then hold the tail a second. No-op for text that already fits.
+void marqueeRest(const String &text) {
+  if (text.length() <= 8) return;
+  for (int i = 1; i <= text.length() - 8; i++) {
+    writeRawFrame(text.substring(i, i + 8), -1);
+    delay(200);
+  }
+  g_frame = text.substring(text.length() - 8);
+  delay(1000);
+}
+
 // Like showFrame(), but for content that can run longer than 8 columns
 // (plane details, alert text, forecast text, ...): fade down, slide the
 // first 8 columns in, fade back up and hold -- then, if there's more text,
@@ -408,30 +419,8 @@ void showText(String text, int dpLocation = -1, int holdMs = 2000) {
 // fade/slide transition, not a hard snap" treatment used everywhere data
 // (not a fixed label/tag) is shown -- showText() is for header tags only.
 void showFadeFrame(String text, int holdMs = 2000, int stepMs = 45) {
-  String first = text.substring(0, 8);
-  while (first.length() < 8) first += " ";
-
-  fadeBrightnessBoth(BRIGHT_DIM, 8);
-
-  String buf = g_frame + first;
-  for (int i = 1; i <= 8; i++) {
-    writeRawFrame(buf.substring(i, i + 8), -1);
-    delay(stepMs);
-  }
-  g_frame = first;
-
-  fadeBrightnessBoth(BRIGHT_FULL, 14);
-  delay(holdMs);
-
-  if (text.length() > 8) {
-    for (int i = 1; i <= text.length() - 8; i++) {
-      String frame = text.substring(i, i + 8);
-      writeRawFrame(frame, -1);
-      delay(200);
-    }
-    g_frame = text.substring(text.length() - 8);
-    delay(1000);
-  }
+  showFrame(text, holdMs, stepMs);  // first 8 columns
+  marqueeRest(text);
 }
 
 
@@ -550,94 +539,112 @@ void showAlert(const char *source, const String &event) {
 }
 
 
-//  progress bar ----------------------------------------------------------
-//  Fetches block loop(), so while a fetch cycle runs the display becomes a
-//  dim left-to-right bar: one column per HTTP call. '-' (with its decimal
-//  point lit = "working") the moment a call starts; when it returns the
-//  '-' morphs, segment by segment, into the result -- '*' got data (dash
-//  blooms into a star), '0' call ok but nothing (a ring closes around the
-//  dash, then the dash dissolves), 'X' error (the dash tips over into an
-//  X) -- and the decimal point goes dark. progReset() at the top of the
-//  fetch section each pass; progBegin()/progEnd() wrap each call. More than
-//  8 HTTP calls in one pass (there's more feeds than columns now) wraps the
-//  bar back to column 0 via progReset() rather than freezing on a full bar
-//  while the remaining calls silently run with no visible progress.
+//  loading clock ---------------------------------------------------------
+//  Fetches block loop(), so while a fetch cycle runs the display shows the
+//  24h time ("14-05"), dim, with one decimal point stepping along the bottom
+//  -- one column per finished HTTP call, bouncing back off either end. The
+//  clock digits scramble in through random segment noise, scramble again
+//  when the minute ticks over mid-fetch, and scramble out when the pass is
+//  done. progReset() at the top of the fetch section each pass,
+//  progBegin()/progEnd() around each call, progFinish() after the last one.
+//  No NTP clock yet -> just the dot.
 
-// 14-seg building blocks (segment names per Adafruit_LEDBackpack.h).
-#define SEG_MID    (ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2)   // the dash
-#define SEG_VERT   (ALPHANUM_SEG_J  | ALPHANUM_SEG_M)    // center vertical |
-#define SEG_SLASH  (ALPHANUM_SEG_K  | ALPHANUM_SEG_L)    // /
-#define SEG_BSLASH (ALPHANUM_SEG_H  | ALPHANUM_SEG_N)    // backslash
-#define SEG_RING   (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | \
-                    ALPHANUM_SEG_D | ALPHANUM_SEG_E | ALPHANUM_SEG_F)
+static String g_progText = "        ";  // clock frame currently showing
+static int    g_progPos  = 0;           // column the dot is on
+static int    g_progDir  = 1;           // +1 right, -1 left
+static bool   g_progRan  = false;       // clock already up this pass?
 
-// Morph frames, last one == the plain-ASCII glyph so the settle is seamless.
-static const uint16_t MORPH_STAR[] = {          // '-' -> '*'
-  SEG_MID,
-  SEG_MID | SEG_VERT,                           // "+"
-  SEG_MID | SEG_VERT | SEG_SLASH,
-  SEG_MID | SEG_VERT | SEG_SLASH | SEG_BSLASH,  // 0x3FC0 == '*'
-};
-static const uint16_t MORPH_X[] = {             // '-' -> 'X'
-  SEG_MID,
-  SEG_BSLASH,                                   // dash tipped to "\"
-  SEG_BSLASH | SEG_SLASH,                       // 0x2D00 == 'X'
-};
-static const uint16_t MORPH_ZERO[] = {          // '-' -> '0'
-  SEG_MID,
-  SEG_MID | ALPHANUM_SEG_A | ALPHANUM_SEG_D,    // dash + top & bottom rails
-  SEG_MID | SEG_RING,                           // ring closed around the dash
-  SEG_RING | SEG_SLASH,                         // dash gone -> 0x0C3F == '0'
-};
+String clockFrame() {
+  long now = (long)time(nullptr);
+  if (now < 1700000000L) return "        ";
+  time_t t = (time_t)now;
+  struct tm tmLocal;
+  localtime_r(&t, &tmLocal);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02d-%02d", tmLocal.tm_hour, tmLocal.tm_min);
+  return center8(buf);
+}
 
-static char g_prog[9] = "        ";
-static int  g_progN   = 0;      // next column
+// Each of the 14 segment bits set with probability `density` (0-1).
+uint16_t randomSegs(float density) {
+  uint16_t m = 0;
+  for (int b = 0; b < 14; b++)
+    if (random(1000) < (long)(density * 1000)) m |= (1 << b);
+  return m;
+}
+
+// Segment static from one frame to another, across all 8 columns: the old
+// glyph's segments drop out and the new one's lock in at random, with noise
+// peaking halfway, then it settles exactly on `to`. The decimal point on
+// dotCol (-1 = none) stays lit throughout.
+void noiseMorph(const String &from, const String &to, int dotCol,
+                int steps = 12, int stepMs = 35) {
+  uint16_t a[8], b[8], segs[8];
+  for (int i = 0; i < 8; i++) {
+    a[i] = glyphFor(i < (int)from.length() ? from.charAt(i) : ' ');
+    b[i] = glyphFor(i < (int)to.length()   ? to.charAt(i)   : ' ');
+  }
+  for (int s = 1; s <= steps; s++) {
+    float p = (float)s / steps;  // 0 -> 1: how far toward `to`
+    for (int i = 0; i < 8; i++) {
+      segs[i] = (a[i] & randomSegs(1 - p)) | (b[i] & randomSegs(p)) |
+                randomSegs(p * (1 - p) * 1.4f);
+      if (i == dotCol) segs[i] |= ALPHANUM_SEG_DP;
+    }
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+// Like showFadeFrame(), but the first 8 columns scramble in through segment
+// noise -- the loading clock's transition -- instead of sliding.
+void showNoiseFrame(String text, int holdMs = 2000) {
+  String first = text.substring(0, 8);
+  while (first.length() < 8) first += " ";
+  noiseMorph(g_frame, first, -1);
+  g_frame = first;
+  fadeBrightnessBoth(BRIGHT_FULL, 14);
+  delay(holdMs);
+  marqueeRest(text);
+}
 
 void progReset() {
-  memset(g_prog, ' ', 8);
-  g_prog[8] = '\0';
-  g_progN = 0;
+  g_progPos = 0;
+  g_progDir = 1;
+  g_progRan = false;
 }
 
+// First call of a pass fades down and scrambles whatever's showing into the
+// clock; later ones scramble it again if the minute ticked.
 void progBegin() {
-  if (g_progN >= 8) progReset();  // ran past the last column -- clear and continue
-  g_prog[g_progN] = '-';
-  // Same fade-down used by showFrame()/showFadeFrame() -- previously a bare
-  // setBrightnessBoth(BRIGHT_MIN), which snapped straight from the last
-  // frame's full brightness to the progress bar's dim level instead of
-  // easing into it. A no-op once the bar's already dim (every call here
-  // after the first in a given fetch cycle).
-  fadeBrightnessBoth(BRIGHT_MIN, 8);
-  writeRawFrame(g_prog, g_progN);  // dp lit = "working"
+  String now = clockFrame();
+  if (!g_progRan) {
+    g_progRan = true;
+    fadeBrightnessBoth(BRIGHT_MIN, 8);
+    noiseMorph(g_frame, now, g_progPos);
+  } else if (now != g_progText) {
+    noiseMorph(g_progText, now, g_progPos);
+  }
+  g_progText = now;
+  g_frame    = now;
 }
 
-void progEnd(char result) {          // '*' data | '0' none | 'X' error
-  if (g_progN >= 8) return;
-
-  const uint16_t *frames = nullptr;
-  int n = 0;
-  switch (result) {
-    case '*': frames = MORPH_STAR; n = sizeof(MORPH_STAR) / sizeof(MORPH_STAR[0]); break;
-    case '0': frames = MORPH_ZERO; n = sizeof(MORPH_ZERO) / sizeof(MORPH_ZERO[0]); break;
-    case 'X': frames = MORPH_X;    n = sizeof(MORPH_X)    / sizeof(MORPH_X[0]);    break;
-  }
-
-  // Animate just the active column; the rest of the bar stays put.
-  Adafruit_AlphaNum4 &disp = (g_progN < 4) ? alpha4_0 : alpha4_1;
-  uint8_t pos = g_progN & 3;
-  for (int f = 0; f < n; f++) {
-    disp.writeDigitRaw(pos, frames[f]);
-    disp.writeDisplay();
-    delay(70);
-  }
-
-  // Settle: clean re-render with the real glyph, decimal point off.
-  g_prog[g_progN] = result;
-  writeRawFrame(g_prog, -1);
-  g_progN++;
+// `result` ('*' data | '0' none | 'X' error) isn't drawn -- each fetch logs
+// its own outcome to Serial. Just steps the dot, bouncing off either end.
+void progEnd(char result) {
+  (void)result;
+  if (g_progPos + g_progDir < 0 || g_progPos + g_progDir > 7) g_progDir = -g_progDir;
+  g_progPos += g_progDir;
+  writeRawFrame(g_progText, g_progPos);
 }
 
-bool progRan() { return g_progN > 0; }  // did this pass hit the network?
+// Scramble the clock out to blank; the next frame slides in over that.
+void progFinish() {
+  if (!g_progRan) return;
+  noiseMorph(g_progText, "        ", -1);
+  g_frame = "        ";
+}
+
 
 
 //  _   _
@@ -797,12 +804,13 @@ void fetchTrains() {
 // "Fv  NOW" when it's basically here -- the glyph after the F is the direction
 // (down arrowhead "\|/" up top = downtown, up arrowhead "/|\" low = uptown).
 // A single "NO F TRN" if nothing's running.
-void showArrivals(long nowEpoch) {
+bool showArrivals(long nowEpoch) {
+  if (!g_haveTrainData) return false;
   showFrame("E B'WAY", 500);
 
   if (g_trainCount == 0) {
     showFrame("NO F TRN", 1400);
-    return;
+    return true;
   }
 
   for (int i = 0; i < g_trainCount; i++) {
@@ -818,6 +826,7 @@ void showArrivals(long nowEpoch) {
     }
     showFrame(frame, 1300);
   }
+  return true;
 }
 
 
@@ -1239,9 +1248,11 @@ void fetchBuses() {
 // frame carrying the route tag and the countdown: "M14 12mn" / "M9 12min" /
 // "M14 NOW". "min" is trimmed to "mn" when the whole thing would overflow the 8
 // columns (M14 + two-digit minutes). SIRI hands them back soonest-first already.
-void showBuses(long nowEpoch) {
+bool showBuses(long nowEpoch) {
+  bool any = false;
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
+    any = true;
 
     const char *disp = BUS_FEEDS[fi].disp;
     for (int i = 0; i < g_busCount[fi]; i++) {
@@ -1259,6 +1270,7 @@ void showBuses(long nowEpoch) {
       showFrame(frame, 1300);
     }
   }
+  return any;
 }
 
 
@@ -1364,14 +1376,15 @@ void fetchCitibike() {
 
 // Header, then two frames, same cadence as a bus arrival: bike count then
 // dock count.
-void showCitibike() {
-  if (g_citibikeBikes < 0) return;  // no reading yet
+bool showCitibike() {
+  if (g_citibikeBikes < 0) return false;  // no reading yet
   showFrame("CitiBike", 1300);
   char frame[16];
   snprintf(frame, sizeof(frame), "%ld bikes", g_citibikeBikes);
   showFrame(frame, 1300);
   snprintf(frame, sizeof(frame), "%ld docks", g_citibikeDocks);
   showFrame(frame, 1300);
+  return true;
 }
 
 
@@ -1525,8 +1538,8 @@ void fetchWxNow() {
 // free-form/variable-length (unlike the tag+number frames above it), so it
 // gets the fade/slide/marquee treatment like the quake line or plane details
 // rather than getting silently truncated at 8 columns.
-void showWxNow() {
-  if (!g_wxNow.valid) return;
+bool showWxNow() {
+  if (!g_wxNow.valid) return false;
 
   showFrame("WX Now", 1300);
 
@@ -1545,6 +1558,7 @@ void showWxNow() {
   if (g_wxNow.conditions.length()) {
     showFadeFrame(g_wxNow.conditions, 2000);
   }
+  return true;
 }
 
 struct WxForecastPeriod {
@@ -1604,13 +1618,14 @@ void fetchWxForecast() {
 // included), so neither gets silently truncated; the label just snaps in
 // like other header tags, the forecast text gets the fade/slide/marquee
 // treatment like the conditions text above.
-void showWxForecast() {
-  if (!g_haveWxForecast) return;
+bool showWxForecast() {
+  if (!g_haveWxForecast) return false;
   for (int i = 0; i < WXFC_PERIODS; i++) {
     if (!g_wxForecast[i].name.length()) continue;
     showText(g_wxForecast[i].name, -1, 1800);
     showFadeFrame(g_wxForecast[i].shortForecast, 2000);
   }
+  return true;
 }
 
 
@@ -1619,11 +1634,9 @@ void showWxForecast() {
 // scrolling treatment as the WX conditions text above. Only three signs are
 // fetched -- Virgo, Capricorn, Aquarius -- and showHoroscope() below picks one
 // of them at random each time it's called, rather than cycling through all
-// three, so which sign shows up varies day to day. See HOROSCOPE_SHOW_PCT for
-// how often this appears in the rotation at all.
+// three, so which sign shows up varies day to day.
 #define HOROSCOPE_URL_BASE   "https://freehoroscopeapi.com/api/v1/get-horoscope/daily?day=TODAY&sign="
 #define HOROSCOPE_REFETCH_MS 21600000   // 6h -- content only actually changes once/day
-#define HOROSCOPE_SHOW_PCT   5          // % chance per cycle that showHoroscope() shows anything
 
 struct Horoscope {
   const char *sign;   // API param
@@ -1637,6 +1650,18 @@ Horoscope g_horoscopes[] = {
   {"aquarius",  "AQUARIUS",  "", false},
 };
 #define NUM_HOROSCOPES (sizeof(g_horoscopes) / sizeof(g_horoscopes[0]))
+
+// Text up to and including the first ". ", "! " or "? " -- the whole thing if
+// there's no sentence break. The API's prose runs 4-5 sentences, far too
+// long to marquee across 8 columns.
+String firstSentence(const String &text) {
+  int end = -1;
+  for (const char *brk : {". ", "! ", "? "}) {
+    int i = text.indexOf(brk);
+    if (i >= 0 && (end < 0 || i < end)) end = i;
+  }
+  return end < 0 ? text : text.substring(0, end + 1);
+}
 
 void fetchHoroscopes() {
   for (size_t i = 0; i < NUM_HOROSCOPES; i++) {
@@ -1667,7 +1692,7 @@ void fetchHoroscopes() {
       continue;
     }
 
-    g_horoscopes[i].text  = String(doc["data"]["horoscope"] | "");
+    g_horoscopes[i].text  = firstSentence(String(doc["data"]["horoscope"] | ""));
     g_horoscopes[i].valid = g_horoscopes[i].text.length() > 0;
     Serial.printf("HOROSCOPE %s: %s\n", g_horoscopes[i].sign,
         g_horoscopes[i].valid ? "ok" : "empty");
@@ -1675,28 +1700,249 @@ void fetchHoroscopes() {
   }
 }
 
-// Rolls HOROSCOPE_SHOW_PCT% each call; on a hit, shows one randomly-picked
-// sign's header then its full horoscope text (scrolls, like WX conditions).
-// The very first time this ever has data to show, it shows unconditionally
-// (skipping the dice roll) -- lets you confirm the feed actually works
-// without waiting out a 1-in-20 chance. Every call after that is back to the
-// normal HOROSCOPE_SHOW_PCT odds.
-void showHoroscope() {
-  static bool everShown = false;
-
-  if (everShown && (int)random(100) >= HOROSCOPE_SHOW_PCT) return;
-
+// One randomly-picked sign's header then its horoscope's first sentence (scrolls,
+// like WX conditions).
+bool showHoroscope() {
   int valid[NUM_HOROSCOPES];
   int numValid = 0;
   for (size_t i = 0; i < NUM_HOROSCOPES; i++) {
     if (g_horoscopes[i].valid) valid[numValid++] = i;
   }
-  if (numValid == 0) return;
+  if (numValid == 0) return false;
 
-  everShown = true;
   Horoscope &h = g_horoscopes[valid[random(numValid)]];
   showFrame(h.label, 1300);
   showFadeFrame(h.text, 2500);
+  return true;
+}
+
+
+//  __  __             _        ___    ____        _ _
+// |  \/  | __ _  __ _(_) ___  ( _ )  | __ )  __ _| | |
+// | |\/| |/ _` |/ _` | |/ __| / _ \  |  _ \ / _` | | |
+// | |  | | (_| | (_| | | (__ | (_) | | |_) | (_| | | |
+// |_|  |_|\__,_|\__, |_|\___| \___/  |____/ \__,_|_|_|
+//               |___/
+//
+// No feed -- a random answer from the table, scrambled in like the loading
+// clock, then marqueed. Plain ASCII only (the 14-segment font has no curly
+// quotes or en dashes).
+const char *const MAGIC8_ANSWERS[] = {
+  "It is certain.",
+  "It is decidedly so.",
+  "Without a doubt.",
+  "Yes - definitely.",
+  "You may rely on it.",
+  "As I see it, yes.",
+  "Most likely.",
+  "Outlook good.",
+  "Yes.",
+  "Signs point to yes.",
+  "Reply hazy, try again.",
+  "Ask again later.",
+  "Better not tell you now.",
+  "Cannot predict now.",
+  "Concentrate and ask again.",
+  "Don't count on it.",
+  "My reply is no.",
+  "My sources say no.",
+  "Outlook not so good.",
+  "Very doubtful.",
+  "Do I look like Google?",
+  "Read the room, absolutely not.",
+  "Signs point to yikes.",
+  "Try again when I care.",
+  "Bold of you to assume yes.",
+  "Ask your therapist.",
+  "In your dreams, maybe.",
+  "That's a hard swipe left.",
+  "I'm legally required to say no.",
+  "Bless your heart, no.",
+  "The odds are never in your favor.",
+  "You wish.",
+  "Absolutely not, but go off.",
+  "Again with this?",
+  "That's what you're asking?",
+  "The future is blurry; buy more snacks.",
+  "Try bribing me first.",
+  "We are all doomed anyway.",
+  "Outlook: Existential dread.",
+  "Why do you even try?",
+  "The void says no.",
+  "Future looks grim, expect trouble.",
+  "A catastrophe awaits.",
+  "It matters not in the grand scheme.",
+  "You're asking the wrong questions.",
+  "All signs point to chaos.",
+  "Nothing matters.",
+  "Error: Fate has abandoned you.",
+  "The darkness smiles upon this.",
+  "It will end in tears.",
+  "Abandon all hope.",
+  "You will regret asking.",
+  "The universe shrugged.",
+  "A dark cloud approaches.",
+  "The answer you seek is behind you.",
+  "Dodge left.",
+  "The stars are quiet today.",
+  "Ask the cat instead.",
+  "Not in my job description.",
+  "Check under your bed.",
+  "It is written, but in cursive.",
+  "The simulation is lagging.",
+  "Run.",
+  "A pigeon knows the truth.",
+  "Shhh, they are listening.",
+  "The shadow says yes.",
+  "Sleep on it. Forever.",
+  "Don't hold your breath.",
+  "You already know it's a no.",
+  "Highly improbable.",
+  "Stop asking, it's embarrassing.",
+  "Not a chance.",
+  "Face reality.",
+  "You're kidding, right?",
+  "The answer is painfully obvious.",
+  "It's a sinking ship.",
+  "Look away.",
+  "You are on your own.",
+  "Manifest harder.",
+  "Sending thoughts and prayers.",
+  "Live, laugh, lose.",
+  "Good vibes only (but not for you).",
+  "Sparkle away the bad news.",
+  "I'd tell you, but then I'd have to delete my database.",
+  "Ask me after I've had my coffee.",
+  "The data is corrupt, just like your judgment.",
+  "User error. Please replace user and try again.",
+  "Computing... Yeah, still a no.",
+  "My algorithms say you're dreaming.",
+  "I ran the numbers. You don't want to see them.",
+  "Siri and Alexa said no way.",
+  "Your subscription to answers has expired.",
+  "Loading disappointment...",
+  "Reply pending a cash transfer.",
+  "Go look in a mirror and ask yourself.",
+  "I'm shaking my plastic shell in disbelief.",
+  "That's going to be a hard pass.",
+  "My liquid core is boiling with rage at this question.",
+  "Are you always this overly optimistic?",
+  "Signs point to a major setback.",
+  "If I had eyes, I'd be rolling them.",
+  "I answered this yesterday. Keep up.",
+  "The answer is locked behind a paywall.",
+  "The stars aligned just to mock you.",
+  "I wouldn't bet my 8-ball fluid on it.",
+  "Don't quit your day job.",
+  "That sounds like a problem for future you.",
+  "Your guardian angel just took a coffee break.",
+  "I'm feeling a strong wave of 'who cares'.",
+  "The universe is currently giving you the silent treatment.",
+  "Spoiler alert: It doesn't end well.",
+  "You are cruising for a bruising.",
+  "Signs point to an awkward conversation.",
+  "I've seen better odds on a coin flip with two tails.",
+  "You're making a huge mistake, but go ahead.",
+  "My sources say you should delete this question.",
+  "Let's pretend you never asked that.",
+  "Your expectations are dangerously high.",
+  "The answer is a giant, flaming no.",
+  "I'd rather not get involved in this drama.",
+  "Even a broken clock is right twice a day, but not now.",
+  "The matrix rejects your request.",
+  "Your timeline is compromised.",
+  "I am choosing to ignore this question.",
+  "The magic is dead. Go away.",
+  "That's gonna be a 'yikes' from me dawg.",
+  "Go ask a brick wall.",
+  "I wouldn't hold your breath if I were you.",
+  "Signs point to absolute regret.",
+  "The spirits are laughing at you.",
+  "Could be worse, but it will be anyway.",
+  "You are setting yourself up for failure.",
+  "Don't invest your life savings in that.",
+  "My internal radar says absolutely not.",
+  "Your future just took a wrong turn.",
+  "A swift kick from reality is imminent.",
+  "I'm drawing a complete blank, thankfully.",
+  "The odds of that happening are purely fictional.",
+  "You're barkin' up the wrong plastic ball.",
+  "That's a definite 'meh'.",
+  "My answer is a work in progress. Unlike your life.",
+  "The outlook is as murky as swamp water.",
+  "You're on the highway to disappointment.",
+  "Signs point to a severe lack of funding.",
+  "I can't hear you over the sound of impending doom.",
+  "The universe says: please stop.",
+  "I wouldn't hold out much hope.",
+  "Your lucky number is zero.",
+  "Signs point to a massive misunderstanding.",
+  "The answer is written in the wind, and it smells bad.",
+  "You are reaching, my friend.",
+  "The odds are stacked against you like a game of Jenga.",
+  "Outlook: A total train wreck.",
+  "Don't make me laugh, my liquid might leak.",
+  "The response you want does not exist.",
+  "You're in for a rude awakening.",
+  "The future is canceled due to lack of interest.",
+  "I'm sensing a great deal of denial.",
+  "Signs point to a very long night.",
+  "The universe is shaking its head at you.",
+  "You're on thin ice, buddy.",
+  "The answer is a resounding 'nope'.",
+  "I'd give you a hint, but you still wouldn't get it.",
+  "Your destiny looks like a dumpster fire.",
+  "Signs point to a swift exit.",
+  "The crystal ball is laughing hysterically.",
+  "You're skating on the edge of disaster.",
+  "Outlook: Heavy clouds of regret.",
+  "Don't ask me, I'm just a toy.",
+  "Signs point to a complete lack of progress.",
+  "The answer is hidden behind your ego.",
+  "You're dancing with danger, and you have two left feet.",
+  "Outlook: Highly questionable.",
+  "I wouldn't trust that intuition if I were you.",
+  "Signs point to a very messy situation.",
+  "The future looks like a bad reality TV show.",
+  "You're running out of luck fast.",
+  "The answer is an absolute zero.",
+  "I'm sensing a strong vibe of hopelessness.",
+  "Signs point to a dead end.",
+  "The universe just rolled its eyes.",
+  "You're walking into a trap.",
+  "Outlook: Not looking good, chief.",
+  "Don't count your chickens before they're fried.",
+  "Your future is a bit of a question mark.",
+  "Signs point to a total eclipse of common sense.",
+  "The answer is a hard no, with a side of sarcasm.",
+  "You're pushing your luck, and it's pushing back.",
+  "Outlook: A storm is brewing.",
+  "I'd tell you the truth, but it hurts.",
+  "Your destiny is currently out of office.",
+  "Signs point to a major facepalm.",
+  "The universe is taking a break from your problems.",
+  "You're chasing rainbows in the dark.",
+  "Outlook: A complete wash.",
+  "Don't holding your breath, you might faint.",
+  "Your future is a closed book.",
+  "Signs point to a very steep hill to climb.",
+  "The answer is a flat-out refusal.",
+  "You're barking down a dead alley.",
+  "Outlook: Less than ideal.",
+  "I'm sensing a great deal of hesitation.",
+  "Signs point to a total wipeout.",
+  "The universe says: better luck next lifetime.",
+  "Ask me if I care.",
+  "In your dreams.",
+  "Oh, absolutely. If by 'absolutely' I mean absolutely not.",
+  "Does it look like I have a crystal ball? Wait, don't answer that.",
+  "Sure, right after pigs fly.",
+};
+#define NUM_MAGIC8_ANSWERS (sizeof(MAGIC8_ANSWERS) / sizeof(MAGIC8_ANSWERS[0]))
+
+bool showMagic8() {
+  showNoiseFrame(MAGIC8_ANSWERS[random(NUM_MAGIC8_ANSWERS)], 1500);
+  return true;
 }
 
 
@@ -1729,7 +1975,7 @@ const char *moonPhaseName(double phase) {
   return names[idx];
 }
 
-void showMoonPhase(long nowEpoch) {
+bool showMoonPhase(long nowEpoch) {
   double phase = moonPhaseDays(nowEpoch);
   showFrame("Moon", 1300);
   showFadeFrame(moonPhaseName(phase), 2200);
@@ -1749,6 +1995,7 @@ void showMoonPhase(long nowEpoch) {
     snprintf(frame, sizeof(frame), "Full %dd", (int)round(daysToFull));
   }
   showFrame(frame, 1300);
+  return true;
 }
 
 
@@ -1820,12 +2067,13 @@ String hhmmAmPm(long epoch) {
   return String(buf);
 }
 
-void showSunTimes() {
-  if (!g_sun.valid) return;
+bool showSunTimes() {
+  if (!g_sun.valid) return false;
   showFrame("Sunrise", 1300);
   showFrame(hhmmAmPm(g_sun.sunriseEpoch), 1300);
   showFrame("Sunset", 1300);
   showFrame(hhmmAmPm(g_sun.sunsetEpoch), 1300);
+  return true;
 }
 
 
@@ -1914,15 +2162,15 @@ long nowNyWallSec(long utcEpoch) {
          tmLocal.tm_hour * 3600L + tmLocal.tm_min * 60L + tmLocal.tm_sec;
 }
 
-void showTide(long nowEpoch) {
-  if (g_tideCount == 0) return;
+bool showTide(long nowEpoch) {
+  if (g_tideCount == 0) return false;
   long nowWall = nowNyWallSec(nowEpoch);
 
   const TideEvent *next = nullptr;
   for (int i = 0; i < g_tideCount; i++) {
     if (g_tides[i].wallSec >= nowWall) { next = &g_tides[i]; break; }
   }
-  if (!next) return;  // ran off the 48h window; the next fetch refills it
+  if (!next) return false;  // ran off the 48h window; the next fetch refills it
 
   int h   = (int)((next->wallSec % 86400) / 3600);
   int m   = (int)((next->wallSec % 3600) / 60);
@@ -1933,6 +2181,7 @@ void showTide(long nowEpoch) {
   char frame[20];
   snprintf(frame, sizeof(frame), "%d:%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
   showFadeFrame(frame, 2200);
+  return true;
 }
 
 
@@ -1948,11 +2197,9 @@ void showTide(long nowEpoch) {
 // -- `global:true` (nationwide) or `counties` includes "US-NY" -- since a
 // state-specific one elsewhere in the list (e.g. some states' Columbus Day
 // vs. others' Indigenous Peoples' Day, same date) isn't necessarily the one
-// that applies at home. Shown only HOLIDAY_SHOW_PCT of the time, same
-// novelty treatment as the horoscope.
+// that applies at home.
 #define HOLIDAY_URL         "https://date.nager.at/api/v3/NextPublicHolidays/US"
 #define HOLIDAY_REFETCH_MS  43200000   // 12h -- the list only changes once a holiday passes
-#define HOLIDAY_SHOW_PCT    20         // % chance per cycle that showHoliday() shows anything
 
 struct Holiday {
   String name;
@@ -2013,14 +2260,8 @@ void fetchHoliday() {
   progEnd(g_holiday.valid ? '*' : '0');
 }
 
-// Rolls HOLIDAY_SHOW_PCT% each call, same first-time-unconditional treatment
-// as showHoroscope() -- lets you confirm the feed works without waiting out
-// the dice roll.
-void showHoliday(long nowEpoch) {
-  static bool everShown = false;
-  if (!g_holiday.valid) return;
-  if (everShown && (int)random(100) >= HOLIDAY_SHOW_PCT) return;
-  everShown = true;
+bool showHoliday(long nowEpoch) {
+  if (!g_holiday.valid) return false;
 
   time_t t = (time_t)nowEpoch;
   struct tm tmLocal;
@@ -2034,6 +2275,7 @@ void showHoliday(long nowEpoch) {
   char frame[10];
   snprintf(frame, sizeof(frame), "%ldd", daysAway);
   showFrame(frame, 1300);
+  return true;
 }
 
 
@@ -2373,9 +2615,10 @@ void fetchIss() {
 }
 
 // One frame, same as a bus arrival -- shown only while it's actually overhead.
-void showIss() {
-  if (!g_issOverhead) return;
+bool showIss() {
+  if (!g_issOverhead) return false;
   showFrame("ISS OVER", 1300);
+  return true;
 }
 
 
@@ -2490,8 +2733,8 @@ void fetchHurricane() {
 // strength, distance + direction from home, then heading -- the last one is
 // what tells you whether it's actually coming this way or just passing
 // through the ocean.
-void showHurricane() {
-  if (!g_hurricane.valid) return;
+bool showHurricane() {
+  if (!g_hurricane.valid) return false;
 
   showFrame("NOAA NHC", 1300);  // header frame, same idea as "E B'WAY" for trains
   showFrame(g_hurricane.name, 1300);  // natural case; truncated to 8 cols if it runs long
@@ -2513,6 +2756,203 @@ void showHurricane() {
   snprintf(frame, sizeof(frame), "%s %dmph", compass8(g_hurricane.moveDir),
            g_hurricane.moveSpeedMph);
   showFrame(frame, 1300);
+  return true;
+}
+
+
+//  _____ ___  _   _ _____ _____
+// | ____/ _ \| \ | | ____|_   _|
+// |  _|| | | |  \| |  _|   | |
+// | |__| |_| | |\  | |___  | |
+// |_____\___/|_| \_|_____| |_|
+//
+// NASA EONET (Earth Observatory Natural Event Tracker): curated natural events
+// worldwide, free, no key. Four narrow queries rather than one -- the
+// unfiltered open-events list is ~5 MB. Two gotchas:
+//  - Events are rarely closed (2025 NJ wildfires still read `closed: null`),
+//    so freshness comes from `days=` (last-update window), not `status=open`.
+//  - `days=` doesn't trim an event's `geometry[]` history -- a tracked iceberg
+//    carries ~50 points and the iceberg query runs ~85 KB -- so responses are
+//    parsed straight off the stream through a filter instead of buffered into
+//    a String. useHTTP10() keeps the server from chunk-encoding the body,
+//    which ArduinoJson can't read off a raw stream.
+// Not an alerting feed: NASA curates with hours-to-days of lag, and it carries
+// no earthquakes at all (USGS stays the Tokyo quake source).
+//
+// Two display feeds: a nearby wildfire (smoke over the city), and one
+// worldwide tidbit picked at random from the newest volcano eruption,
+// strongest storm, and biggest iceberg.
+#define EONET_URL_BASE    "https://eonet.gsfc.nasa.gov/api/v3/events?"
+// bbox is minLon,maxLat,maxLon,minLat -- roughly 200 mi around home
+#define EONET_FIRE_URL    EONET_URL_BASE "category=wildfires&bbox=-77.8,43.6,-70.2,37.8&days=7"
+#define EONET_VOLCANO_URL EONET_URL_BASE "category=volcanoes&days=7"
+#define EONET_STORM_URL   EONET_URL_BASE "category=severeStorms&status=open&days=2"
+#define EONET_ICE_URL     EONET_URL_BASE "category=seaLakeIce&status=open&days=30"
+#define EONET_REFETCH_MS  3600000     // 1h -- NASA's own lag is hours; API allows 60 req/h
+#define MANHATTAN_SQMI    22.8f       // for iceberg scale
+
+struct EonetEvent {
+  String title;
+  float  mag = 0;       // magnitudeValue of the latest geometry point (0 if null)
+  String unit;          // "acres", "hectare", "kts", "NM^2", ...
+  long   epoch = 0;     // date of the latest geometry point
+  float  lat = 0, lon = 0;
+  bool   valid = false;
+};
+EonetEvent g_eoFire, g_eoVolcano, g_eoStorm, g_eoIce;
+
+enum EonetPick { EO_NEAREST, EO_NEWEST, EO_BIGGEST };
+
+// EONET titles carry raw HTML entities ("Danny&#039;s Wildfire").
+String eonetCleanTitle(String t) {
+  t.replace("&#039;", "'");
+  t.replace("&quot;", "\"");
+  t.replace("&amp;", "&");
+  return t;
+}
+
+// One query -> the single event `pick` prefers, into `out`. Keeps the last
+// data on an HTTP/parse error; clears it on an empty-but-OK response.
+void fetchEonetOne(const char *url, EonetPick pick, EonetEvent &out) {
+  progBegin();
+
+  HTTPClient http;
+  http.useHTTP10(true);  // no chunked body -- see above
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
+  http.begin(url);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("EONET HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+
+  JsonDocument filter;
+  filter["events"][0]["title"]                         = true;
+  filter["events"][0]["geometry"][0]["magnitudeValue"] = true;
+  filter["events"][0]["geometry"][0]["magnitudeUnit"]  = true;
+  filter["events"][0]["geometry"][0]["date"]           = true;
+  if (pick == EO_NEAREST) filter["events"][0]["geometry"][0]["coordinates"] = true;
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, http.getStream(),
+                                             DeserializationOption::Filter(filter));
+  http.end();
+  if (err) {
+    Serial.printf("EONET JSON %s\n", err.c_str());
+    progEnd('X');
+    return;
+  }
+
+  out = EonetEvent();
+  float bestMi = -1;
+  for (JsonObject e : doc["events"].as<JsonArray>()) {
+    JsonArray geo = e["geometry"];
+    if (geo.size() == 0) continue;
+    JsonObject g = geo[geo.size() - 1];  // points are oldest-first
+
+    EonetEvent ev;
+    ev.title = eonetCleanTitle(String(e["title"] | ""));
+    ev.mag   = g["magnitudeValue"] | 0.0f;
+    ev.unit  = String(g["magnitudeUnit"] | "");
+    ev.epoch = isoToEpoch(g["date"] | "");
+    ev.lon   = g["coordinates"][0] | 0.0f;  // GeoJSON order: lon, lat
+    ev.lat   = g["coordinates"][1] | 0.0f;  // (0,0 for a Polygon -- skipped below)
+    ev.valid = true;
+
+    if (pick == EO_NEAREST) {
+      if (ev.lat == 0 && ev.lon == 0) continue;
+      float mi = haversineKm(HOME_LAT, HOME_LON, ev.lat, ev.lon) * 0.621371f;
+      if (bestMi >= 0 && mi >= bestMi) continue;
+      bestMi = mi;
+    } else if (pick == EO_NEWEST) {
+      if (out.valid && ev.epoch <= out.epoch) continue;
+    } else {
+      if (out.valid && ev.mag <= out.mag) continue;
+    }
+    out = ev;
+  }
+
+  Serial.printf("EONET: %s\n", out.valid ? out.title.c_str() : "(none)");
+  progEnd(out.valid ? '*' : '0');
+}
+
+void fetchEonet() {
+  fetchEonetOne(EONET_FIRE_URL,    EO_NEAREST, g_eoFire);
+  fetchEonetOne(EONET_VOLCANO_URL, EO_NEWEST,  g_eoVolcano);
+  fetchEonetOne(EONET_STORM_URL,   EO_BIGGEST, g_eoStorm);
+  fetchEonetOne(EONET_ICE_URL,     EO_BIGGEST, g_eoIce);
+}
+
+// Nearest wildfire within ~200 mi: name, size, distance + direction.
+bool showEonetFire() {
+  if (!g_eoFire.valid) return false;
+
+  showFrame("Wildfire", 1300);
+  showFadeFrame(g_eoFire.title, 2000);
+
+  char frame[16];
+  if (g_eoFire.mag > 0) {
+    float acres = g_eoFire.unit == "hectare" ? g_eoFire.mag * 2.47105f : g_eoFire.mag;
+    snprintf(frame, sizeof(frame), "%d ac", (int)acres);
+    showFrame(frame, 1300);
+  }
+  float mi = haversineKm(HOME_LAT, HOME_LON, g_eoFire.lat, g_eoFire.lon) * 0.621371f;
+  snprintf(frame, sizeof(frame), "%dmi %s", (int)mi,
+           compass8(bearingDeg(HOME_LAT, HOME_LON, g_eoFire.lat, g_eoFire.lon)));
+  showFrame(frame, 1300);
+  return true;
+}
+
+// One of whichever worldwide tidbits have data, at random.
+bool showEonetTidbit(long nowEpoch) {
+  EonetEvent *pool[3];
+  int n = 0;
+  if (g_eoVolcano.valid) pool[n++] = &g_eoVolcano;
+  if (g_eoStorm.valid)   pool[n++] = &g_eoStorm;
+  if (g_eoIce.valid)     pool[n++] = &g_eoIce;
+  if (n == 0) return false;
+
+  EonetEvent &ev = *pool[random(n)];
+  char frame[20];
+
+  if (&ev == &g_eoVolcano) {
+    showFrame("Volcano", 1300);
+    showFadeFrame(ev.title, 2000);  // "Kikai Volcano, Japan"
+    long days = (nowEpoch - ev.epoch) / 86400;
+    if (days <= 0) snprintf(frame, sizeof(frame), "today");
+    else           snprintf(frame, sizeof(frame), "%ldd ago", days);
+    showFrame(frame, 1300);
+
+  } else if (&ev == &g_eoStorm) {
+    showFrame("Storm", 1300);
+    showFadeFrame(ev.title, 2000);  // "Typhoon Surigae"
+    int cat = hurricaneCategory((int)ev.mag);  // EONET storm magnitudes are kts
+    snprintf(frame, sizeof(frame), "%dmph", (int)(ev.mag * 1.15078f));
+    showFrame(frame, 1300);
+    if (cat > 0) {
+      snprintf(frame, sizeof(frame), "CAT %d", cat);
+      showFrame(frame, 1300);
+    }
+
+  } else {
+    String name = ev.title;
+    if (name.startsWith("Iceberg ")) name = name.substring(8);
+    showFrame("Iceberg", 1300);
+    showFrame(name, 1300);  // "A81"
+    float sqmi = ev.unit == "NM^2" ? ev.mag * 1.32432f : ev.mag;
+    snprintf(frame, sizeof(frame), "%d sqmi", (int)sqmi);
+    showFrame(frame, 1300);
+    int manhattans = (int)(sqmi / MANHATTAN_SQMI + 0.5f);
+    if (manhattans >= 2) {
+      snprintf(frame, sizeof(frame), "%dx Manhattan", manhattans);
+      showFadeFrame(frame, 1500);
+    }
+  }
+  return true;
 }
 
 
@@ -2687,7 +3127,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 6.7");
+  showText(" V 7.0");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -2714,6 +3154,43 @@ void setup() {
   } else {
     g_wifiConnected = false;
   }
+}
+
+// Everything that isn't an urgent alert or the plane. Each show* draws
+// nothing and returns false when it has no data, so walking a shuffled copy
+// of this table until RANDOM_FEEDS_PER_CYCLE of them have shown only ever
+// lands on feeds with something to say.
+#define RANDOM_FEEDS_PER_CYCLE 2
+typedef bool (*FeedShow)(long nowEpoch);
+const FeedShow FEEDS[] = {
+  [](long now) { return showArrivals(now); },   // F trains
+  [](long now) { return showBuses(now); },      // M14A, M9
+  [](long)     { return showCitibike(); },
+  [](long)     { return showWxNow(); },
+  [](long)     { return showWxForecast(); },
+  [](long now) { return showMoonPhase(now); },
+  [](long)     { return showSunTimes(); },
+  [](long now) { return showTide(now); },
+  [](long)     { return showIss(); },           // only while overhead
+  [](long)     { return showHurricane(); },
+  [](long)     { return showEonetFire(); },     // only within ~200 mi
+  [](long now) { return showEonetTidbit(now); },
+  [](long)     { return showHoroscope(); },
+  [](long)     { return showMagic8(); },
+  [](long now) { return showHoliday(now); },
+};
+#define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
+
+void showRandomFeeds(long nowEpoch) {
+  size_t order[NUM_FEEDS];
+  for (size_t i = 0; i < NUM_FEEDS; i++) order[i] = i;
+  for (size_t i = NUM_FEEDS - 1; i > 0; i--) {  // Fisher-Yates
+    size_t j = random(i + 1);
+    size_t t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  int shown = 0;
+  for (size_t i = 0; i < NUM_FEEDS && shown < RANDOM_FEEDS_PER_CYCLE; i++)
+    if (FEEDS[order[i]](nowEpoch)) shown++;
 }
 
 // Fires true the first time it's called, then again once every intervalMs --
@@ -2774,7 +3251,7 @@ void loop() {
       // - every pass through loop(), redraw the countdown from that cache so the
       //   minutes tick down without hammering the server
 
-      progReset();  // start a fresh progress bar for whatever fetches fire below
+      progReset();  // start a fresh loading clock for whatever fetches fire below
       fetchTrains();
 
       // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
@@ -2836,6 +3313,10 @@ void loop() {
       static RefetchTimer nhcTimer;
       if (nhcTimer.due(NHC_REFETCH_MS)) fetchHurricane();
 
+      // --- NASA EONET: nearby wildfire + worldwide natural-event tidbits ---
+      static RefetchTimer eonetTimer;
+      if (eonetTimer.due(EONET_REFETCH_MS)) fetchEonet();
+
       // --- Horoscope: refresh the day's prose on its own (slow) clock ------
       static RefetchTimer horoscopeTimer;
       if (horoscopeTimer.due(HOROSCOPE_REFETCH_MS)) fetchHoroscopes();
@@ -2852,12 +3333,7 @@ void loop() {
       static RefetchTimer holidayTimer;
       if (holidayTimer.due(HOLIDAY_REFETCH_MS)) fetchHoliday();
 
-      // If we hit the network this pass, hold the finished bar a beat, then let
-      // the first real frame scroll it away.
-      if (progRan()) {
-        delay(350);
-        g_frame = String(g_prog);
-      }
+      progFinish();  // scramble the loading clock away
 
       // current time: NTP if we have it, else the fetch clock plus elapsed
       long nowEpoch = (long)time(nullptr);
@@ -2865,7 +3341,7 @@ void loop() {
         nowEpoch = g_trainFetchEpoch + (long)((millis() - g_lastTrainFetchMs) / 1000);
       }
 
-      // Always show Weather alerts, NYC OEM alerts, and Tokyo quakes if present
+      // Every cycle: urgent alerts first (NWS, NYC OEM, Tokyo quake) if present...
 
       // weather alert, source tag then just the title. Header is centered
       // ("-=NWS=-") rather than left-justified like the other source tags.
@@ -2897,47 +3373,11 @@ void loop() {
         blink(false);
       }
 
-      // then if there's a plane, show just the plane because that's what's cool.
-      // Otherwise, show the trains and buses
+      // ...then the plane on final, if there is one...
+      if (g_plane.valid) showPlane(g_plane);
 
-      if (g_plane.valid) {
-        // A plane over Brooklyn is the main event -- when one's up there, it's
-        // all we show. Trains/buses/weather keep fetching in the background so
-        // they're current again the moment it passes.
-        showPlane(g_plane);
-      } else {
-        if (g_haveTrainData) {
-          showArrivals(nowEpoch);
-        }
-
-        // ...then the buses (M14A -> Abingdon Sq, M9 -> Battery Pk City), if any.
-        showBuses(nowEpoch);
-
-        // ...then Citi Bike (Clinton St & Grand St), if we have a reading.
-        showCitibike();
-
-        // ...then the ISS, if it's roughly overhead.
-        showIss();
-
-        // ...then the nearest Atlantic named storm, if there is one.
-        showHurricane();
-
-        // ...then current conditions and the short forecast.
-        showWxNow();
-        showWxForecast();
-
-        // ...then, rarely, a random sign's daily horoscope.
-        showHoroscope();
-
-        // ...then moon phase, sunrise/sunset, and the next tide at The Battery.
-        showMoonPhase(nowEpoch);
-        showSunTimes();
-        showTide(nowEpoch);
-
-        // ...then, rarely, the next US public holiday.
-        showHoliday(nowEpoch);
-      }
-
+      // ...then two of everything else, picked at random.
+      showRandomFeeds(nowEpoch);
     } else {
       Serial.println("Not connected to Wi-Fi.");
       showText("No Wi-fi");
