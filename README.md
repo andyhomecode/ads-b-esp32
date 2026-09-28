@@ -65,6 +65,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   `false` to go back to filtering out all Minor/Moderate regardless of
   urgency). OEM re-sends every alert once per language; only the English copy
   (`senderName` = `NYCEM [English]`) is ever shown. Nothing shown otherwise.
+  Followed by its age (`3H AGO`); shown every other cycle after 12 h, dropped
+  after 24 h.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
   tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
@@ -112,7 +114,7 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [sunrise-sunset.org](https://sunrise-sunset.org/).
 - **Tide**: `High` or `Low` then the next tide's time and height
   (`3-45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
-- **Magic 8 Ball**: a `-* Magic 8 Ball *-` intro, then a random answer
+- **Magic 8 Ball**: a pulsing `<8-BALL>` intro, then a random answer
   (classic or snarky) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
   (nationwide, or NY specifically), then a countdown (`29d`), via
@@ -574,6 +576,11 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.4
+ - Sep 28, 2026
+ - Magic 8 Ball intro is a pulsing `<8-BALL>` instead of a scroll.
+ - NYC OEM alerts show their age, go every-other-cycle after 12 h, and drop
+   after 24 h.
  - version 7.3
  - Sep 27, 2026
  - Sunrise/sunset and tide times use a dash (`6-42am`); the colon drew as a

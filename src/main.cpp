@@ -467,6 +467,7 @@ struct CapAlert {
   String urgency;
   String certainty;
   String category;  // CAP <category> -- OEM only; see capIsHighUrgency() below
+  long   sent = 0;  // CAP <sent> as a UTC epoch, 0 if missing -- OEM only
 };
 
 // Fails OPEN: excludes only known-low values, rather than requiring known-high
@@ -1940,7 +1941,11 @@ const char *const MAGIC8_ANSWERS[] = {
 #define NUM_MAGIC8_ANSWERS (sizeof(MAGIC8_ANSWERS) / sizeof(MAGIC8_ANSWERS[0]))
 
 bool showMagic8() {
-  showFadeFrame("-* Magic 8 Ball *-", 1000);
+  slideIn("<8-BALL>");
+  for (int i = 0; i < 2; i++) {  // pulse: fade in, fade out, twice
+    fadeBrightnessBoth(BRIGHT_FULL, 30);
+    fadeBrightnessBoth(0, 30);
+  }
   showNoiseFrame(MAGIC8_ANSWERS[random(NUM_MAGIC8_ANSWERS)], 1500);
   return true;
 }
@@ -2454,12 +2459,13 @@ void fetchOemAlert() {
     a.urgency   = xmlTag(cap, "urgency");
     a.certainty = xmlTag(cap, "certainty");
     a.category  = xmlTag(cap, "category");
+    a.sent      = isoToEpoch(xmlTag(cap, "sent").c_str());
     bool english = oemIsEnglish(cap);
     bool match = english && capIsHighUrgency(a);
 
-    Serial.printf("OEM item: event=\"%s\" headline=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" category=\"%s\" %s\n",
+    Serial.printf("OEM item: event=\"%s\" headline=\"%s\" severity=\"%s\" urgency=\"%s\" certainty=\"%s\" category=\"%s\" sent=%ld %s\n",
                   a.event.c_str(), a.headline.c_str(), a.severity.c_str(),
-                  a.urgency.c_str(), a.certainty.c_str(), a.category.c_str(),
+                  a.urgency.c_str(), a.certainty.c_str(), a.category.c_str(), a.sent,
                   match ? "-> SHOWING" : (english ? "(filtered out)" : "(non-English, skipped)"));
 
     if (match) {
@@ -2472,6 +2478,46 @@ void fetchOemAlert() {
 
   Serial.printf("OEM: %s\n", g_oemAlert.event.length() ? g_oemAlert.event.c_str() : "(none)");
   progEnd(g_oemAlert.event.length() ? '*' : '0');
+}
+
+// OEM alerts can sit in the feed for days. Age the current one from its CAP
+// <sent> time: past OEM_HALF_AFTER_S it shows every other cycle, past
+// OEM_MAX_SHOW_S not at all. If <sent> is missing, fall back to when this
+// device first showed it (keyed by headline + event, RAM only).
+#define OEM_HALF_AFTER_S (12L * 3600)
+#define OEM_MAX_SHOW_S   (24L * 3600)
+
+bool oemShouldShow(long now) {
+  if (!g_oemAlert.event.length()) return false;
+  if (now < 1700000000L) return true;  // no clock -> can't age it
+
+  static String seenKey;
+  static long firstShown = 0;
+  static bool skipNext = false;
+
+  String key = g_oemAlert.headline + "|" + g_oemAlert.event;
+  if (key != seenKey) {
+    seenKey    = key;
+    firstShown = now;
+    skipNext   = false;
+  }
+
+  long age = now - (g_oemAlert.sent ? g_oemAlert.sent : firstShown);
+  if (age > OEM_MAX_SHOW_S) return false;
+  if (age > OEM_HALF_AFTER_S) {
+    skipNext = !skipNext;
+    return !skipNext;  // alternates: skip, show, skip, ...
+  }
+  return true;
+}
+
+// "25M AGO" / "13H AGO" since the alert's CAP <sent>; "" if unknown.
+String oemAgeText(long now) {
+  if (!g_oemAlert.sent || now < 1700000000L) return "";
+  long age = now - g_oemAlert.sent;
+  if (age < 0) age = 0;
+  if (age < 3600) return String(age / 60) + "M AGO";
+  return String(age / 3600) + "H AGO";
 }
 
 
@@ -3029,7 +3075,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.3");
+  showText(" V 7.4");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -3261,7 +3307,11 @@ void loop() {
                             ? "OEM " + g_oemAlert.category
                             : String("OEM");
       oemSource.toUpperCase();
-      showAlert(oemSource.c_str(), g_oemAlert.headline.length() ? g_oemAlert.headline : g_oemAlert.event);
+      if (oemShouldShow(nowEpoch)) {  // aged out / halved -- see oemShouldShow()
+        showAlert(oemSource.c_str(), g_oemAlert.headline.length() ? g_oemAlert.headline : g_oemAlert.event);
+        String age = oemAgeText(nowEpoch);
+        if (age.length()) showFadeFrame(center8(age), 1500);
+      }
 
       // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
       if (g_quakeLine.length()) {
