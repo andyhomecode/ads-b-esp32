@@ -24,8 +24,8 @@
 //
 // File layout (top to bottom): Config -> Hardware & globals -> Display / LED
 // rendering -> Time parsing -> Trains -> Lookups -> Planes -> Buses ->
-// Citi Bike -> Weather -> Quake -> ISS -> WiFi & config portal -> Setup &
-// loop. Each feed section carries a fetchX() (pulls data into a cache) and a
+// Citi Bike -> Weather -> Quake -> ISS -> the small feeds (airports, aurora,
+// Tokyo, air, launches, sports, ...) -> WiFi & config portal -> Setup & loop. Each feed section carries a fetchX() (pulls data into a cache) and a
 // showX() (renders the cache); the Display section is the only place that
 // touches the LED hardware directly.
 
@@ -101,6 +101,14 @@
 #define ADSB_ALT_MIN    800           // ft -- on final, low over Brooklyn
 #define ADSB_ALT_MAX    5000          // ft
 #define ADSB_REFETCH_MS 20000         // planes move fast; poll sooner than the trains
+
+// Emergency squawks anywhere near NYC: adsb.lol's per-squawk endpoint returns
+// every aircraft worldwide currently squawking that code (usually none, so a
+// ~100-byte answer). Checked most-serious first; the first code with a plane
+// inside SQK_RADIUS_MI of home wins.
+#define SQK_URL_BASE    "https://api.adsb.lol/v2/sqk/"
+#define SQK_RADIUS_MI   150.0f
+#define SQK_REFETCH_MS  120000        // 2 min
 
 // adsb.lol's route lookup -- the same one the web GUI uses. POST a callsign +
 // the plane's current lat/lng; it returns the airports and a `plausible` flag,
@@ -718,6 +726,29 @@ long isoToEpoch(const char *iso) {
 }
 
 
+// GET url into `out` -- the shared boilerplate for the small feeds.
+// Logs "<tag> HTTP <code>" and returns false on anything but 200 (or 206,
+// the answer to a Range request). Callers still do their own
+// progBegin()/progEnd().
+bool httpGet(const char *tag, const String &url, String &out, const char *range = nullptr) {
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(url);
+  if (range) http.addHeader("Range", range);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK && code != HTTP_CODE_PARTIAL_CONTENT) {
+    Serial.printf("%s HTTP %d\n", tag, code);
+    http.end();
+    return false;
+  }
+  out = http.getString();
+  http.end();
+  return true;
+}
+
+
 //  _____             _
 // |_   _| __ __ _ ___(_)_ __  ___
 //   | || '__/ _` |_  / | '_ \/ __|
@@ -1177,6 +1208,79 @@ void showPlane(const Plane &p) {
   showFadeFrame(flight, 3000);
 }
 
+// --- Emergency squawks (see SQK_URL_BASE above) ----------------------------
+// Shown with the urgent alerts, every cycle while it lasts.
+
+struct SquawkCode {
+  const char *code;
+  const char *meaning;
+};
+const SquawkCode SQUAWKS[] = {   // most serious first
+  {"7500", "HIJACK"},
+  {"7700", "EMERGENCY"},
+  {"7600", "RADIO FAILURE"},
+};
+
+String g_squawkTag;   // "SQK 7700"
+String g_squawkLine;  // "EMERGENCY UAL 123 B738 45 MI NE 12000 FT"; "" when clear
+
+float haversineKm(float lat1, float lon1, float lat2, float lon2);
+float bearingDeg(float lat1, float lon1, float lat2, float lon2);
+const char *compass8(float deg);
+
+void fetchSquawks() {
+  String tag, line;
+  for (const SquawkCode &sq : SQUAWKS) {
+    progBegin();
+    String payload;
+    if (!httpGet("SQK", String(SQK_URL_BASE) + sq.code, payload)) {
+      progEnd('X');
+      continue;
+    }
+
+    JsonDocument filter;
+    filter["ac"][0]["flight"]   = true;
+    filter["ac"][0]["t"]        = true;
+    filter["ac"][0]["lat"]      = true;
+    filter["ac"][0]["lon"]      = true;
+    filter["ac"][0]["alt_baro"] = true;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+      Serial.println("SQK JSON parse error");
+      progEnd('X');
+      continue;
+    }
+
+    float bestMi = SQK_RADIUS_MI;
+    for (JsonObject a : doc["ac"].as<JsonArray>()) {
+      if (a["lat"].isNull()) continue;
+      float lat = a["lat"], lon = a["lon"];
+      float mi  = haversineKm(HOME_LAT, HOME_LON, lat, lon) * 0.621371f;
+      if (mi > bestMi) continue;
+      bestMi = mi;
+
+      String cs = String(a["flight"] | "");
+      cs.trim();
+      if (cs.length() > 3 && isAlpha(cs[0]) && isAlpha(cs[1]) && isAlpha(cs[2]))
+        cs = cs.substring(0, 3) + " " + cs.substring(3);   // as in showPlane()
+      long alt = a["alt_baro"] | 0L;                        // "ground" -> 0
+
+      tag  = String("SQK ") + sq.code;
+      line = String(sq.meaning) + " " + (cs.length() ? cs : String("UNKNOWN"));
+      if (String(a["t"] | "").length()) line += " " + String(a["t"] | "");
+      line += " " + String((int)roundf(mi)) + " MI " +
+              compass8(bearingDeg(HOME_LAT, HOME_LON, lat, lon));
+      if (alt > 0) line += " " + String(alt) + " FT";
+    }
+    progEnd(line.length() ? '*' : '0');
+    if (line.length()) break;  // most serious code wins
+  }
+  g_squawkTag  = tag;
+  g_squawkLine = line;
+  Serial.printf("SQK: %s\n", line.length() ? line.c_str() : "(none)");
+}
+
 
 //  _               _
 // | |__  _   _ ___| |_ ___
@@ -1396,7 +1500,7 @@ void fetchCitibike() {
 
 // Header, then two frames, same cadence as a bus arrival: bike count then
 // dock count.
-bool showCitibike() {
+bool showCitibike(long) {
   if (g_citibikeBikes < 0) return false;  // no reading yet
   showFrame("CitiBike", 1300);
   char frame[16];
@@ -1558,7 +1662,7 @@ void fetchWxNow() {
 // free-form/variable-length (unlike the tag+number frames above it), so it
 // gets the fade/slide/marquee treatment like the quake line or plane details
 // rather than getting silently truncated at 8 columns.
-bool showWxNow() {
+bool showWxNow(long) {
   if (!g_wxNow.valid) return false;
 
   showFrame("WX Now", 1300);
@@ -1638,7 +1742,7 @@ void fetchWxForecast() {
 // included), so neither gets silently truncated; the label just snaps in
 // like other header tags, the forecast text gets the fade/slide/marquee
 // treatment like the conditions text above.
-bool showWxForecast() {
+bool showWxForecast(long) {
   if (!g_haveWxForecast) return false;
   for (int i = 0; i < WXFC_PERIODS; i++) {
     if (!g_wxForecast[i].name.length()) continue;
@@ -1722,7 +1826,7 @@ void fetchHoroscopes() {
 
 // One randomly-picked sign's header then its horoscope's first sentence (scrolls,
 // like WX conditions).
-bool showHoroscope() {
+bool showHoroscope(long) {
   int valid[NUM_HOROSCOPES];
   int numValid = 0;
   for (size_t i = 0; i < NUM_HOROSCOPES; i++) {
@@ -1960,7 +2064,7 @@ const char *const MAGIC8_ANSWERS[] = {
 };
 #define NUM_MAGIC8_ANSWERS (sizeof(MAGIC8_ANSWERS) / sizeof(MAGIC8_ANSWERS[0]))
 
-bool showMagic8() {
+bool showMagic8(long) {
   slideIn("<8-BALL>");
   for (int i = 0; i < 2; i++) {  // pulse: fade in, fade out, twice
     fadeBrightnessBoth(BRIGHT_FULL, 30);
@@ -2092,7 +2196,7 @@ String hhmmAmPm(long epoch) {
   return String(buf);
 }
 
-bool showSunTimes() {
+bool showSunTimes(long) {
   if (!g_sun.valid) return false;
   showFrame("Sunrise", 1300);
   showFrame(hhmmAmPm(g_sun.sunriseEpoch), 1300);
@@ -2222,8 +2326,9 @@ bool showTide(long nowEpoch) {
 // -- `global:true` (nationwide) or `counties` includes "US-NY" -- since a
 // state-specific one elsewhere in the list (e.g. some states' Columbus Day
 // vs. others' Indigenous Peoples' Day, same date) isn't necessarily the one
-// that applies at home.
+// that applies at home. Japan's next holiday comes from the same API.
 #define HOLIDAY_URL         "https://date.nager.at/api/v3/NextPublicHolidays/US"
+#define JP_HOLIDAY_URL      "https://date.nager.at/api/v3/NextPublicHolidays/JP"
 #define HOLIDAY_REFETCH_MS  43200000   // 12h -- the list only changes once a holiday passes
 
 struct Holiday {
@@ -2232,18 +2337,21 @@ struct Holiday {
   bool   valid    = false;
 };
 Holiday g_holiday;
+Holiday g_jpHoliday;
 
-void fetchHoliday() {
+// Fills `out` with the first holiday in `url`'s list that's nationwide or,
+// when `county` is given, observed there.
+void fetchHolidayFrom(const char *tag, const char *url, const char *county, Holiday &out) {
   progBegin();
 
   HTTPClient http;
   http.setUserAgent(USER_AGENT);
   http.setConnectTimeout(4000);
   http.setTimeout(5000);
-  http.begin(HOLIDAY_URL);
+  http.begin(url);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.printf("HOLIDAY HTTP %d\n", code);
+    Serial.printf("%s HTTP %d\n", tag, code);
     http.end();
     progEnd('X');
     return;
@@ -2259,44 +2367,51 @@ void fetchHoliday() {
 
   JsonDocument doc;
   if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
-    Serial.println("HOLIDAY JSON parse error");
+    Serial.printf("%s JSON parse error\n", tag);
     progEnd('X');
     return;
   }
 
-  g_holiday.valid = false;
+  out.valid = false;
   for (JsonObject h : doc.as<JsonArray>()) {
     bool appliesHere = h["global"] | false;
-    if (!appliesHere) {
+    if (!appliesHere && county) {
       for (JsonVariant c : h["counties"].as<JsonArray>()) {
-        if (strcmp(c.as<const char *>(), "US-NY") == 0) { appliesHere = true; break; }
+        if (strcmp(c.as<const char *>(), county) == 0) { appliesHere = true; break; }
       }
     }
     if (!appliesHere) continue;
 
     int Y, Mo, D;
     if (sscanf(h["date"] | "", "%d-%d-%d", &Y, &Mo, &D) < 3) continue;
-    g_holiday.name    = String(h["name"] | "");
-    g_holiday.civilDay = daysFromCivil(Y, Mo, D);
-    g_holiday.valid   = true;
+    out.name     = String(h["name"] | "");
+    out.civilDay = daysFromCivil(Y, Mo, D);
+    out.valid    = true;
     break;  // list is soonest-first
   }
-  Serial.printf("HOLIDAY: %s\n", g_holiday.valid ? g_holiday.name.c_str() : "(none applicable)");
-  progEnd(g_holiday.valid ? '*' : '0');
+  Serial.printf("%s: %s\n", tag, out.valid ? out.name.c_str() : "(none applicable)");
+  progEnd(out.valid ? '*' : '0');
 }
 
-bool showHoliday(long nowEpoch) {
-  if (!g_holiday.valid) return false;
+void fetchHoliday()   { fetchHolidayFrom("HOLIDAY", HOLIDAY_URL, "US-NY", g_holiday); }
+void fetchJpHoliday() { fetchHolidayFrom("JP HOLIDAY", JP_HOLIDAY_URL, nullptr, g_jpHoliday); }
+bool showHolidayFrom(const Holiday &h, const char *header, long nowEpoch);
+bool showHoliday(long nowEpoch)   { return showHolidayFrom(g_holiday, "Holiday", nowEpoch); }
+bool showJpHoliday(long nowEpoch) { return showHolidayFrom(g_jpHoliday, "Japan", nowEpoch); }
+
+// Header, the holiday's name, then a countdown in days.
+bool showHolidayFrom(const Holiday &h, const char *header, long nowEpoch) {
+  if (!h.valid) return false;
 
   time_t t = (time_t)nowEpoch;
   struct tm tmLocal;
   localtime_r(&t, &tmLocal);
   long today = daysFromCivil(tmLocal.tm_year + 1900, tmLocal.tm_mon + 1, tmLocal.tm_mday);
-  long daysAway = g_holiday.civilDay - today;
+  long daysAway = h.civilDay - today;
   if (daysAway < 0) daysAway = 0;  // stale cache from just after it passed; next fetch refills
 
-  showFrame("Holiday", 1300);
-  showFadeFrame(g_holiday.name, 2000);
+  showFrame(header, 1300);
+  showFadeFrame(h.name, 2000);
   char frame[10];
   snprintf(frame, sizeof(frame), "%ldd", daysAway);
   showFrame(frame, 1300);
@@ -2397,53 +2512,48 @@ void fetchNews() {
 
 // A blinking NEWS tag, then one random headline scrolling steady -- same
 // look as the NWS alert.
-bool showNews() {
+bool showNews(long) {
   if (!g_newsCount) return false;
   showAlert(center8("NEWS").c_str(), g_news[random(g_newsCount)]);
   return true;
 }
 
 
-//  ____   ___   ____    ____   ___   ___
-// / ___| ( _ ) |  _ \  | ___| / _ \ / _ \
-// \___ \ / _ \/\ |_) | |___ \| | | | | | |
-//  ___) | (_>  <  __/   ___) | |_| | |_| |
-// |____/ \___/\/_|     |____/ \___/ \___/
+//   ___              _
+//  / _ \ _   _  ___ | |_ ___  ___
+// | | | | | | |/ _ \| __/ _ \/ __|
+// | |_| | |_| | (_) | ||  __/\__ \
+//  \__\_\\__,_|\___/ \__\___||___/
 //
-// S&P 500 level and today's change, via Yahoo Finance's chart endpoint --
-// free and keyless, but undocumented (the one behind their own site), so it
-// could start refusing us or change shape without notice. Live during market
-// hours; otherwise it's the last close and that day's change. The change is
-// computed from chartPreviousClose rather than read from Yahoo's own change
-// fields, so it only depends on the two numbers.
-#define STOCKS_URL        "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d"
-#define STOCKS_REFETCH_MS 300000      // 5 min
-#define STOCKS_BIG_PCT    2.0f        // |change| at/above this -> the whole thing blinks
+// S&P 500, USD/JPY and Bitcoin, via Yahoo Finance's chart endpoint -- free
+// and keyless, but undocumented (the one behind their own site), so it could
+// start refusing us or change shape without notice. Live during market hours;
+// otherwise it's the last close and that day's change. The change is computed
+// from chartPreviousClose rather than read from Yahoo's own change fields, so
+// it only depends on the two numbers.
+#define QUOTE_URL_BASE   "https://query1.finance.yahoo.com/v8/finance/chart/"
+#define QUOTE_REFETCH_MS 300000      // 5 min
 
-struct Stocks {
-  float price     = 0;
-  float prevClose = 0;
-  bool  valid     = false;
+struct Quote {
+  const char *label;     // header frame
+  const char *symbol;    // Yahoo symbol, URL-encoded
+  int         decimals;  // for the level and point change
+  float       bigPct;    // |change| at/above this -> the whole thing blinks
+  float       price;     // the rest is the cache, zeroed as a global
+  float       prevClose;
+  bool        valid;
 };
-Stocks g_stocks;
+Quote g_spx = {"STOCKS",  "%5EGSPC", 2, 2.0f};
+Quote g_yen = {"YEN",     "JPY%3DX", 2, 1.0f};   // yen per dollar
+Quote g_btc = {"BITCOIN", "BTC-USD", 0, 5.0f};
 
-void fetchStocks() {
+void fetchQuote(Quote &q) {
   progBegin();
-
-  HTTPClient http;
-  http.setUserAgent(USER_AGENT);
-  http.setConnectTimeout(4000);
-  http.setTimeout(5000);
-  http.begin(STOCKS_URL);
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("STOCKS HTTP %d\n", code);
-    http.end();
+  String payload;
+  if (!httpGet(q.label, String(QUOTE_URL_BASE) + q.symbol + "?interval=1d&range=1d", payload)) {
     progEnd('X');
     return;
   }
-  String payload = http.getString();
-  http.end();
 
   JsonDocument filter;
   filter["chart"]["result"][0]["meta"]["regularMarketPrice"] = true;
@@ -2451,7 +2561,7 @@ void fetchStocks() {
 
   JsonDocument doc;
   if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
-    Serial.println("STOCKS JSON parse error");
+    Serial.printf("%s JSON parse error\n", q.label);
     progEnd('X');
     return;
   }
@@ -2460,30 +2570,30 @@ void fetchStocks() {
   float price = meta["regularMarketPrice"] | 0.0f;
   float prev  = meta["chartPreviousClose"] | 0.0f;
   if (price > 0 && prev > 0) {  // a bad fetch keeps the last good quote
-    g_stocks.price     = price;
-    g_stocks.prevClose = prev;
-    g_stocks.valid     = true;
+    q.price     = price;
+    q.prevClose = prev;
+    q.valid     = true;
   }
-  Serial.printf("STOCKS: %.2f (prev %.2f)\n", price, prev);
+  Serial.printf("%s: %.2f (prev %.2f)\n", q.label, price, prev);
   progEnd(price > 0 && prev > 0 ? '*' : '0');
 }
 
-// STOCKS, the level, the point change, the percent change, then the level
-// again to finish on. A move of STOCKS_BIG_PCT or more either way blinks the
-// whole sequence.
-bool showStocks() {
-  if (!g_stocks.valid) return false;
-  float chg = g_stocks.price - g_stocks.prevClose;
-  float pct = chg / g_stocks.prevClose * 100.0f;
-  bool  big = fabsf(pct) >= STOCKS_BIG_PCT;
+// The label, the level, the point change, the percent change, then the level
+// again to finish on. A move of q.bigPct or more either way blinks the whole
+// sequence.
+bool showQuote(const Quote &q) {
+  if (!q.valid) return false;
+  float chg = q.price - q.prevClose;
+  float pct = chg / q.prevClose * 100.0f;
+  bool  big = fabsf(pct) >= q.bigPct;
 
-  char price[12], pts[12], pctTxt[12];
-  snprintf(price,  sizeof(price),  "%.2f", g_stocks.price);
-  snprintf(pts,    sizeof(pts),    "%+.2f", chg);
+  char price[16], pts[16], pctTxt[16];
+  snprintf(price,  sizeof(price),  "%.*f", q.decimals, q.price);
+  snprintf(pts,    sizeof(pts),    "%+.*f", q.decimals, chg);
   snprintf(pctTxt, sizeof(pctTxt), "%+.2f%%", pct);
 
   if (big) blink(true);
-  showFrame(center8("STOCKS"), 1300);
+  showFrame(center8(q.label), 1300);
   showFrame(price,  1800);
   showFrame(pts,    1500);
   showFrame(pctTxt, 1500);
@@ -2491,6 +2601,13 @@ bool showStocks() {
   if (big) blink(false);
   return true;
 }
+
+void fetchStocks()     { fetchQuote(g_spx); }
+void fetchYen()        { fetchQuote(g_yen); }
+void fetchBitcoin()    { fetchQuote(g_btc); }
+bool showStocks(long)  { return showQuote(g_spx); }
+bool showYen(long)     { return showQuote(g_yen); }
+bool showBitcoin(long) { return showQuote(g_btc); }
 
 
 //                          ___  _____ __  __
@@ -2746,10 +2863,6 @@ String oemAgeText(long now) {
 String g_quakeTag;   // "QUAKE" or "TSUNAMI"
 String g_quakeLine;  // "M5.2 74 KM NE"; "" when quiet
 
-float haversineKm(float lat1, float lon1, float lat2, float lon2);
-float bearingDeg(float lat1, float lon1, float lat2, float lon2);
-const char *compass8(float deg);
-
 void fetchQuake() {
   long now = (long)time(nullptr);
   if (now < 1700000000L) return;      // no clock yet -> can't judge the 24h window
@@ -2836,7 +2949,7 @@ float bearingDeg(float lat1, float lon1, float lat2, float lon2) {
 
 // Nearest 8-point compass letter(s) for a bearing -- used by the hurricane
 // feed below, for both "which way is it from home" and "which way is it
-// heading" -- and the Tokyo quake's direction from Kita.
+// heading" -- and the Tokyo quake's direction from Kita, and squawks'.
 const char *compass8(float deg) {
   static const char *pts[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
   int idx = ((int)((deg + 22.5f) / 45.0f)) % 8;
@@ -2877,7 +2990,7 @@ void fetchIss() {
 }
 
 // One frame, same as a bus arrival -- shown only while it's actually overhead.
-bool showIss() {
+bool showIss(long) {
   if (!g_issOverhead) return false;
   showFrame("ISS OVER", 1300);
   return true;
@@ -2995,7 +3108,7 @@ void fetchHurricane() {
 // strength, distance + direction from home, then heading -- the last one is
 // what tells you whether it's actually coming this way or just passing
 // through the ocean.
-bool showHurricane() {
+bool showHurricane(long) {
   if (!g_hurricane.valid) return false;
 
   showFrame("NOAA NHC", 1300);  // header frame, same idea as "E B'WAY" for trains
@@ -3102,7 +3215,7 @@ void fetchIceberg() {
 }
 
 // Biggest open iceberg: name, area, and how many Manhattans that is.
-bool showIceberg() {
+bool showIceberg(long) {
   if (!g_iceberg.valid) return false;
 
   char frame[20];
@@ -3115,6 +3228,1041 @@ bool showIceberg() {
   if (manhattans >= 2) {
     snprintf(frame, sizeof(frame), "%dx Manhattan", manhattans);
     showFadeFrame(frame, 1500);
+  }
+  return true;
+}
+
+
+// Fires true the first time it's called, then again once every intervalMs --
+// replaces the hand-copied "static lastMs + static first" pair each feed's
+// refetch gate used to carry.
+struct RefetchTimer {
+  unsigned long lastMs = 0;
+  bool first = true;
+  bool due(unsigned long intervalMs) {
+    if (!first && millis() - lastMs < intervalMs) return false;
+    first = false;
+    lastMs = millis();
+    return true;
+  }
+};
+
+
+//     _    _                       _
+//    / \  (_)_ __ _ __   ___  _ __| |_ ___
+//   / _ \ | | '__| '_ \ / _ \| '__| __/ __|
+//  / ___ \| | |  | |_) | (_) | |  | |_\__ \
+// /_/   \_\_|_|  | .__/ \___/|_|   \__|___/
+//                |_|
+//
+// FAA's national airport status feed (nasstatus.faa.gov), free, no key, ~2 KB
+// of XML covering every US airport with something going on. We only care
+// about EWR, LGA and JFK. The feed groups records by <Delay_type> -- ground
+// stops, ground delay programs, general arrival/departure delays, closures --
+// each record carrying its own <ARPT>. First (most serious) entry per airport
+// wins.
+#define FAA_URL         "https://nasstatus.faa.gov/api/airport-status-information"
+#define FAA_REFETCH_MS  300000        // 5 min
+const char *const FAA_AIRPORTS[] = {"EWR", "LGA", "JFK"};
+#define NUM_FAA_AIRPORTS (sizeof(FAA_AIRPORTS) / sizeof(FAA_AIRPORTS[0]))
+
+String g_airportDelay[NUM_FAA_AIRPORTS];  // "LGA GROUND STOP - thunderstorms"; "" when normal
+
+// "1 hour and 19 minutes" -> "1h19m", "16 minutes" -> "16m". Anything it
+// can't make sense of comes back unchanged.
+String durShort(const String &s) {
+  String out;
+  int num = -1;
+  for (unsigned int i = 0; i < s.length();) {
+    if (isDigit(s[i])) {
+      num = 0;
+      while (i < s.length() && isDigit(s[i])) num = num * 10 + (s[i++] - '0');
+    } else if (isAlpha(s[i])) {
+      char unit = tolower(s[i]);
+      while (i < s.length() && isAlpha(s[i])) i++;
+      if (num >= 0 && (unit == 'h' || unit == 'm')) out += String(num) + unit;
+      num = -1;
+    } else {
+      i++;
+    }
+  }
+  return out.length() ? out : s;
+}
+
+void fetchAirports() {
+  progBegin();
+  String xml;
+  if (!httpGet("FAA", FAA_URL, xml)) {
+    progEnd('X');
+    return;
+  }
+
+  String found[NUM_FAA_AIRPORTS];
+  int at = 0;
+  while ((at = xml.indexOf("<Delay_type>", at)) >= 0) {
+    int end = xml.indexOf("</Delay_type>", at);
+    if (end < 0) break;
+    String block = xml.substring(at, end);
+    at = end;
+    String kind = xmlTag(block, "Name");  // "Ground Stop Programs", ...
+
+    for (int r = block.indexOf("<ARPT>"); r >= 0;) {
+      int next = block.indexOf("<ARPT>", r + 6);
+      String rec = block.substring(r, next < 0 ? block.length() : next);
+      r = next;
+
+      String arpt = xmlTag(rec, "ARPT");
+      for (size_t i = 0; i < NUM_FAA_AIRPORTS; i++) {
+        if (arpt != FAA_AIRPORTS[i] || found[i].length()) continue;
+        String what;
+        String reason = xmlTag(rec, "Reason");
+        if (kind.indexOf("Ground Stop") >= 0) {
+          what = "GROUND STOP";
+          String until = xmlTag(rec, "End_Time");
+          if (until.length()) what += " TIL " + until;
+        } else if (kind.indexOf("Ground Delay") >= 0) {
+          what = "DELAYS AVG " + durShort(xmlTag(rec, "Avg"));
+        } else if (kind.indexOf("Closure") >= 0) {
+          what = "CLOSED";
+          reason = "";  // a raw NOTAM, far too long to scroll
+        } else {
+          what  = rec.indexOf("\"Arrival\"") >= 0 ? "ARR DELAYS " : "DEP DELAYS ";
+          what += durShort(xmlTag(rec, "Min")) + "-" + durShort(xmlTag(rec, "Max"));
+        }
+        found[i] = String(FAA_AIRPORTS[i]) + " " + what;
+        if (reason.length()) found[i] += " - " + reason;
+      }
+    }
+  }
+
+  int n = 0;
+  for (size_t i = 0; i < NUM_FAA_AIRPORTS; i++) {
+    g_airportDelay[i] = found[i];
+    if (found[i].length()) {
+      Serial.printf("FAA: %s\n", found[i].c_str());
+      n++;
+    }
+  }
+  if (!n) Serial.println("FAA: EWR/LGA/JFK normal");
+  progEnd(n ? '*' : '0');
+}
+
+bool hasAirportDelays() {
+  for (size_t i = 0; i < NUM_FAA_AIRPORTS; i++)
+    if (g_airportDelay[i].length()) return true;
+  return false;
+}
+
+// DELAYS, then one scrolling line per affected airport.
+bool showAirports(long) {
+  if (!hasAirportDelays()) return false;
+  showFrame(center8("DELAYS"), 1300);
+  for (size_t i = 0; i < NUM_FAA_AIRPORTS; i++)
+    if (g_airportDelay[i].length()) showFadeFrame(g_airportDelay[i], 2000);
+  return true;
+}
+
+
+//     _
+//    / \  _   _ _ __ ___  _ __ __ _
+//   / _ \| | | | '__/ _ \| '__/ _` |
+//  / ___ \ |_| | | | (_) | | | (_| |
+// /_/   \_\__,_|_|  \___/|_|  \__,_|
+//
+// NOAA SWPC's planetary K-index, the standard 0-9 geomagnetic storm scale,
+// ~5 KB of JSON covering the last week in 3-hour steps. Kp 7+ (a strong, G3
+// storm) is roughly when the aurora can reach NYC's latitude -- as it did in
+// May 2024 -- so that's when it joins the urgent alerts. Rare by design.
+#define KP_URL         "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+#define KP_REFETCH_MS  900000         // 15 min
+#define AURORA_KP      7.0f
+#define KP_MAX_AGE_S   (6L * 3600)    // ignore a reading older than this
+
+float g_kp = -1;  // latest Kp; -1 when unknown or stale
+
+void fetchKp() {
+  progBegin();
+  String payload;
+  if (!httpGet("KP", KP_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("KP JSON parse error");
+    progEnd('X');
+    return;
+  }
+  JsonArray rows = doc.as<JsonArray>();
+  if (rows.size() == 0) {
+    progEnd('0');
+    return;
+  }
+
+  // Oldest-first. Rows are objects today; SWPC used to send arrays of
+  // strings (header row first), so accept either shape.
+  JsonVariant last = rows[rows.size() - 1];
+  float  kp;
+  String when;
+  if (last.is<JsonObject>()) {
+    kp   = last["Kp"] | -1.0f;
+    when = String(last["time_tag"] | "");
+  } else {
+    kp   = atof(last[1] | "-1");
+    when = String(last[0] | "");
+  }
+  when.replace(' ', 'T');  // "2026-10-01 09:00:00.000" -> isoToEpoch()'s shape
+
+  long now = (long)time(nullptr);
+  if (now > 1700000000L && now - isoToEpoch(when.c_str()) > KP_MAX_AGE_S) kp = -1;
+  g_kp = kp;
+  Serial.printf("KP: %.2f\n", g_kp);
+  progEnd(g_kp >= 0 ? '*' : '0');
+}
+
+
+// __        __    _
+// \ \      / /_ _| |_ ___ _ __
+//  \ \ /\ / / _` | __/ _ \ '__|
+//   \ V  V / (_| | ||  __/ |
+//    \_/\_/ \__,_|\__\___|_|
+//
+// Harbor water temperature at The Battery -- same NOAA CO-OPS API and station
+// as the tide feed, product=water_temperature, ~150 bytes.
+#define WATER_URL        "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=water_temperature&station=8518750&date=latest&units=english&time_zone=lst_ldt&format=json"
+#define WATER_REFETCH_MS 1800000      // 30 min
+
+float g_waterF = -1000;  // -1000 = no reading yet
+
+void fetchWater() {
+  progBegin();
+  String payload;
+  if (!httpGet("WATER", WATER_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("WATER JSON parse error");
+    progEnd('X');
+    return;
+  }
+  const char *v = doc["data"][0]["v"] | "";  // a string: "66.6"
+  if (v[0]) g_waterF = atof(v);              // a bad reading keeps the last one
+  Serial.printf("WATER: %s\n", v[0] ? v : "(none)");
+  progEnd(v[0] ? '*' : '0');
+}
+
+bool showWater(long) {
+  if (g_waterF < -100) return false;
+  showFrame("Water", 1300);
+  char frame[12];
+  snprintf(frame, sizeof(frame), "%dF", (int)roundf(g_waterF));
+  showFrame(frame, 1500);
+  return true;
+}
+
+
+//  _____     _
+// |_   _|__ | | ___   _  ___
+//   | |/ _ \| |/ / | | |/ _ \
+//   | | (_) |   <| |_| | (_) |
+//   |_|\___/|_|\_\\__, |\___/
+//                 |___/
+//
+// Local time and weather in Kita City (EQ_REF_LAT/LON, same spot the quake
+// distance is measured from), via Open-Meteo -- free, no key, ~400 bytes.
+// The clock is our own NTP time shifted to JST; Japan has no DST.
+#define TOKYO_WX_URL        "https://api.open-meteo.com/v1/forecast?latitude=35.7528&longitude=139.7336&current=temperature_2m,weather_code"
+#define TOKYO_WX_REFETCH_MS 1800000   // 30 min
+#define TOKYO_UTC_OFFSET_S  32400     // JST = UTC+9
+
+struct TokyoNow {
+  float tempC = 0;
+  int   code  = 0;   // WMO weather code
+  bool  valid = false;
+};
+TokyoNow g_tokyo;
+
+// WMO weather interpretation code (what Open-Meteo returns) -> a few words.
+const char *wmoText(int c) {
+  if (c == 0)  return "Clear";
+  if (c == 1)  return "Mostly clear";
+  if (c == 2)  return "Partly cloudy";
+  if (c == 3)  return "Overcast";
+  if (c <= 48) return "Fog";
+  if (c <= 57) return "Drizzle";
+  if (c <= 67) return "Rain";
+  if (c <= 77) return "Snow";
+  if (c <= 82) return "Showers";
+  if (c <= 86) return "Snow showers";
+  return "Thunderstorm";
+}
+
+void fetchTokyo() {
+  progBegin();
+  String payload;
+  if (!httpGet("TOKYO", TOKYO_WX_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload) || doc["current"]["temperature_2m"].isNull()) {
+    Serial.println("TOKYO JSON parse error");
+    progEnd('X');
+    return;
+  }
+  g_tokyo.tempC = doc["current"]["temperature_2m"];
+  g_tokyo.code  = doc["current"]["weather_code"] | 0;
+  g_tokyo.valid = true;
+  Serial.printf("TOKYO: %.1fC %s\n", g_tokyo.tempC, wmoText(g_tokyo.code));
+  progEnd('*');
+}
+
+// Tokyo, the time there, the temperature in both units, then the sky.
+bool showTokyo(long nowEpoch) {
+  if (!g_tokyo.valid) return false;
+  showFrame("Tokyo", 1300);
+
+  char frame[16];
+  if (nowEpoch > 1700000000L) {
+    time_t t = (time_t)(nowEpoch + TOKYO_UTC_OFFSET_S);
+    struct tm tmJst;
+    gmtime_r(&t, &tmJst);
+    int h12 = tmJst.tm_hour % 12;
+    if (h12 == 0) h12 = 12;
+    snprintf(frame, sizeof(frame), "%d-%02d%s", h12, tmJst.tm_min, tmJst.tm_hour < 12 ? "am" : "pm");
+    showFrame(frame, 1500);
+  }
+
+  snprintf(frame, sizeof(frame), "%dC %dF", (int)roundf(g_tokyo.tempC), (int)roundf(cToF(g_tokyo.tempC)));
+  showFrame(frame, 1500);
+  showFadeFrame(wmoText(g_tokyo.code), 1500);
+  return true;
+}
+
+
+//     _    _
+//    / \  (_)_ __
+//   / _ \ | | '__|
+//  / ___ \| | |
+// /_/   \_\_|_|
+//
+// US AQI and UV index at home, via Open-Meteo's air-quality API -- free, no
+// key, ~400 bytes. One fetch feeds two entries in FEEDS: Air (always) and UV
+// (only once it's high), so fetchAir() gates itself rather than letting each
+// entry's own timer fetch it twice.
+#define AIR_URL         "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=40.7168&longitude=-73.9861&current=us_aqi,uv_index"
+#define AIR_REFETCH_MS  1800000       // 30 min
+#define AQI_BLINK       101           // "unhealthy for sensitive groups" and worse
+#define UV_SHOW_MIN     6.0f          // "high" and up
+
+struct AirNow {
+  int   aqi = -1;  // -1 = no reading yet
+  float uv  = -1;
+};
+AirNow g_air;
+
+void fetchAir() {
+  static RefetchTimer timer;
+  if (!timer.due(AIR_REFETCH_MS)) return;
+
+  progBegin();
+  String payload;
+  if (!httpGet("AIR", AIR_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload) || doc["current"]["us_aqi"].isNull()) {
+    Serial.println("AIR JSON parse error");
+    progEnd('X');
+    return;
+  }
+  g_air.aqi = doc["current"]["us_aqi"];
+  g_air.uv  = doc["current"]["uv_index"] | -1.0f;
+  Serial.printf("AIR: AQI %d, UV %.1f\n", g_air.aqi, g_air.uv);
+  progEnd('*');
+}
+
+const char *aqiText(int aqi) {
+  if (aqi <= 50)  return "Good";
+  if (aqi <= 100) return "Moderate";
+  if (aqi <= 150) return "Unhealthy for some";
+  if (aqi <= 200) return "Unhealthy";
+  if (aqi <= 300) return "Very unhealthy";
+  return "Hazardous";
+}
+
+const char *uvText(float uv) {
+  if (uv < 3)  return "Low";
+  if (uv < 6)  return "Moderate";
+  if (uv < 8)  return "High";
+  if (uv < 11) return "Very high";
+  return "Extreme";
+}
+
+// Air, the AQI, then what it means. Blinks throughout once it's unhealthy.
+bool showAir(long) {
+  if (g_air.aqi < 0) return false;
+  bool bad = g_air.aqi >= AQI_BLINK;
+  if (bad) blink(true);
+  showFrame("Air", 1300);
+  char frame[12];
+  snprintf(frame, sizeof(frame), "AQI %d", g_air.aqi);
+  showFrame(frame, 1500);
+  showFadeFrame(aqiText(g_air.aqi), 1500);
+  if (bad) blink(false);
+  return true;
+}
+
+bool showUv(long) {
+  if (g_air.uv < UV_SHOW_MIN) return false;
+  char frame[12];
+  snprintf(frame, sizeof(frame), "UV %d", (int)roundf(g_air.uv));
+  showFrame(frame, 1500);
+  showFadeFrame(uvText(g_air.uv), 1500);
+  return true;
+}
+//     _        _                 _     _
+//    / \   ___| |_ ___ _ __ ___ (_) __| |
+//   / _ \ / __| __/ _ \ '__/ _ \| |/ _` |
+//  / ___ \\__ \ ||  __/ | | (_) | | (_| |
+// /_/   \_\___/\__\___|_|  \___/|_|\__,_|
+//
+// The closest asteroid flyby in the next week, from NASA/JPL's close-approach
+// API -- free, no key, ~1 KB. dist-max=0.05 au (~19 lunar distances) and
+// sort=dist&limit=1 hand back just the nearest one. Size is estimated from
+// its absolute magnitude H assuming a typical 14% albedo -- good to within a
+// factor of two or so, which is all a "~50m wide" needs.
+#define CAD_URL         "https://ssd-api.jpl.nasa.gov/cad.api?dist-max=0.05&date-min=now&date-max=%2B7&sort=dist&limit=1"
+#define CAD_REFETCH_MS  21600000      // 6h
+#define MI_PER_AU       92955807.0f
+
+struct Asteroid {
+  String name;        // "2019 AS2"
+  float  mi    = 0;   // miss distance
+  int    sizeM = 0;   // estimated diameter
+  long   epoch = 0;   // time of closest approach, UTC
+  bool   valid = false;
+};
+Asteroid g_rock;
+
+// "2026-Oct-02 19:28" -> UTC epoch (JPL's TDB is ~1 min off UTC; close enough).
+long cadTimeToEpoch(const char *cd) {
+  int Y, D, h, m;
+  char mon[4];
+  if (sscanf(cd, "%d-%3s-%d %d:%d", &Y, mon, &D, &h, &m) < 5) return 0;
+  const char *p = strstr("JanFebMarAprMayJunJulAugSepOctNovDec", mon);
+  if (!p) return 0;
+  int Mo = (p - "JanFebMarAprMayJunJulAugSepOctNovDec") / 3 + 1;
+  return daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L;
+}
+
+void fetchAsteroid() {
+  progBegin();
+  String payload;
+  if (!httpGet("CAD", CAD_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("CAD JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  // fields: des, orbit_id, jd, cd, dist, dist_min, dist_max, v_rel, v_inf, t_sigma_f, h
+  JsonArray row = doc["data"][0];
+  g_rock.valid = false;
+  if (!row.isNull()) {
+    float au = atof(row[4] | "0");
+    float H  = atof(row[10] | "30");
+    g_rock.name  = String(row[0] | "");
+    g_rock.mi    = au * MI_PER_AU;
+    g_rock.sizeM = (int)roundf(3551930.0f * powf(10.0f, -H / 5.0f));  // 1329 km / sqrt(0.14)
+    g_rock.epoch = cadTimeToEpoch(row[3] | "");
+    g_rock.valid = g_rock.name.length() && g_rock.epoch > 0;
+  }
+  Serial.printf("CAD: %s\n", g_rock.valid ? g_rock.name.c_str() : "(none within range)");
+  progEnd(g_rock.valid ? '*' : '0');
+}
+
+// NY-local day count from now until epoch: "Today", "Tomorrow", "in 3d".
+String daysAwayText(long epoch, long nowEpoch) {
+  time_t a = (time_t)epoch, b = (time_t)nowEpoch;
+  struct tm ta, tb;
+  localtime_r(&a, &ta);
+  localtime_r(&b, &tb);
+  long d = daysFromCivil(ta.tm_year + 1900, ta.tm_mon + 1, ta.tm_mday) -
+           daysFromCivil(tb.tm_year + 1900, tb.tm_mon + 1, tb.tm_mday);
+  if (d <= 0) return "Today";
+  if (d == 1) return "Tomorrow";
+  return "in " + String(d) + "d";
+}
+
+// Asteroid, its name, how big, how close, and when.
+bool showAsteroid(long nowEpoch) {
+  if (!g_rock.valid) return false;
+  char frame[16];
+  showFrame("Asteroid", 1300);
+  showFadeFrame(g_rock.name, 1500);
+  snprintf(frame, sizeof(frame), "%dm wide", g_rock.sizeM);
+  showFadeFrame(frame, 1500);
+  if (g_rock.mi < 1000000.0f) snprintf(frame, sizeof(frame), "%dK mi", (int)(g_rock.mi / 1000.0f));
+  else                        snprintf(frame, sizeof(frame), "%.1fM mi", g_rock.mi / 1000000.0f);
+  showFrame(frame, 1500);
+  showFrame(daysAwayText(g_rock.epoch, nowEpoch), 1500);
+  return true;
+}
+
+
+//  _                           _
+// | |    __ _ _   _ _ __   ___| |__
+// | |   / _` | | | | '_ \ / __| '_ \
+// | |__| (_| | |_| | | | | (__| | | |
+// |_____\__,_|\__,_|_| |_|\___|_| |_|
+//
+// The next rocket launch anywhere, from The Space Devs' Launch Library 2 --
+// free, no key, ~1 KB with limit=1&mode=list. The free tier allows 15
+// requests an hour, so this polls hourly. Names come as
+// "Falcon 9 Block 5 | Crew-13": rocket before the bar, mission after.
+#define LAUNCH_URL         "https://ll.thespacedevs.com/2.3.0/launches/upcoming/?limit=1&mode=list"
+#define LAUNCH_REFETCH_MS  3600000    // 1h
+
+struct Launch {
+  String rocket;      // "Falcon 9"
+  String mission;     // "Crew-13"
+  long   net = 0;     // scheduled liftoff, UTC
+  bool   valid = false;
+};
+Launch g_launch;
+
+void fetchLaunch() {
+  progBegin();
+  String payload;
+  if (!httpGet("LAUNCH", LAUNCH_URL, payload)) {
+    progEnd('X');
+    return;
+  }
+  JsonDocument filter;
+  filter["results"][0]["name"] = true;
+  filter["results"][0]["net"]  = true;
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("LAUNCH JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  JsonObject r = doc["results"][0];
+  String name  = asciiFold(String(r["name"] | ""));
+  long   net   = isoToEpoch(r["net"] | "");
+  if (!name.length() || !net) {
+    progEnd('0');
+    return;  // keep the last one
+  }
+  int bar = name.indexOf(" | ");
+  g_launch.rocket  = bar < 0 ? String("") : name.substring(0, bar);
+  g_launch.mission = bar < 0 ? name : name.substring(bar + 3);
+  int block = g_launch.rocket.indexOf(" Block");  // "Falcon 9 Block 5" -> "Falcon 9"
+  if (block > 0) g_launch.rocket = g_launch.rocket.substring(0, block);
+  g_launch.net   = net;
+  g_launch.valid = true;
+  Serial.printf("LAUNCH: %s / %s at %ld\n", g_launch.rocket.c_str(), g_launch.mission.c_str(), net);
+  progEnd('*');
+}
+
+// Hidden once it's an hour past liftoff, until the next fetch moves on.
+bool hasLaunch() {
+  long now = (long)time(nullptr);
+  return g_launch.valid && (now < 1700000000L || now < g_launch.net + 3600);
+}
+
+// Launch, the mission, the rocket, then a T-minus countdown.
+bool showLaunch(long nowEpoch) {
+  if (!hasLaunch()) return false;
+  showFrame("Launch", 1300);
+  showFadeFrame(g_launch.mission, 1500);
+  if (g_launch.rocket.length()) showFadeFrame(g_launch.rocket, 1500);
+
+  if (nowEpoch > 1700000000L) {
+    long d = g_launch.net - nowEpoch;
+    char frame[16];
+    if (d < 0)               snprintf(frame, sizeof(frame), "T+%ldm", -d / 60);
+    else if (d >= 2 * 86400) snprintf(frame, sizeof(frame), "T-%ldd", d / 86400);
+    else if (d >= 3600)      snprintf(frame, sizeof(frame), "T-%ldh%02ldm", d / 3600, (d % 3600) / 60);
+    else                     snprintf(frame, sizeof(frame), "T-%ldm", d / 60);
+    showFrame(frame, 1500);
+  }
+  return true;
+}
+
+
+//  ____              _ _       _     _
+// |  _ \  __ _ _   _| (_) __ _| |__ | |_
+// | | | |/ _` | | | | | |/ _` | '_ \| __|
+// | |_| | (_| | |_| | | | (_| | | | | |_
+// |____/ \__,_|\__, |_|_|\__, |_| |_|\__|
+//              |___/     |___/
+//
+// How much daylight today, and how that compares with yesterday -- two calls
+// to the same sunrise-sunset.org API as the sunrise/sunset feed, which takes
+// date=today / date=yesterday directly and returns day_length in seconds.
+#define DAYLEN_URL_BASE   "https://api.sunrise-sunset.org/json?lat=40.7168&lng=-73.9861&formatted=0&tzid=America/New_York&date="
+#define DAYLEN_REFETCH_MS 21600000    // 6h
+
+long g_dayLen[2] = {-1, -1};  // seconds: [0] today, [1] yesterday
+
+void fetchDaylight() {
+  const char *days[2] = {"today", "yesterday"};
+  for (int i = 0; i < 2; i++) {
+    progBegin();
+    String payload;
+    if (!httpGet("DAYLEN", String(DAYLEN_URL_BASE) + days[i], payload)) {
+      progEnd('X');
+      continue;
+    }
+    JsonDocument filter;
+    filter["results"]["day_length"] = true;
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+      Serial.println("DAYLEN JSON parse error");
+      progEnd('X');
+      continue;
+    }
+    long len = doc["results"]["day_length"] | -1L;
+    if (len > 0) g_dayLen[i] = len;
+    progEnd(len > 0 ? '*' : '0');
+  }
+  Serial.printf("DAYLEN: %ld s, yesterday %ld s\n", g_dayLen[0], g_dayLen[1]);
+}
+
+// Daylight, today's length, then the change since yesterday ("-2m40s").
+bool showDaylight(long) {
+  if (g_dayLen[0] < 0 || g_dayLen[1] < 0) return false;
+  char frame[16];
+  showFrame("Daylight", 1300);
+  snprintf(frame, sizeof(frame), "%ldh%02ldm", g_dayLen[0] / 3600, (g_dayLen[0] % 3600) / 60);
+  showFrame(frame, 1500);
+  long d    = g_dayLen[0] - g_dayLen[1];
+  char sign = d < 0 ? '-' : '+';
+  d = labs(d);
+  if (d >= 60) snprintf(frame, sizeof(frame), "%c%ldm%02lds", sign, d / 60, d % 60);
+  else         snprintf(frame, sizeof(frame), "%c%lds", sign, d);
+  showFrame(frame, 1500);
+  return true;
+}
+
+
+//  ____
+// / ___|  ___  __ _ ___  ___  _ __  ___
+// \___ \ / _ \/ _` / __|/ _ \| '_ \/ __|
+//  ___) |  __/ (_| \__ \ (_) | | | \__ \
+// |____/ \___|\__,_|___/\___/|_| |_|___/
+//
+// Countdown to the next equinox or solstice. No network: Meeus, Astronomical
+// Algorithms ch. 27, table 27.C (mean equinoxes/solstices, years 2000-3000),
+// which lands within ~10 minutes of the real moment -- plenty for a day count.
+
+// k: 0 March equinox, 1 June solstice, 2 September equinox, 3 December solstice.
+long seasonEpoch(int year, int k) {
+  static const double c[4][5] = {
+    {2451623.80984, 365242.37404,  0.05169, -0.00411, -0.00057},
+    {2451716.56767, 365241.62603,  0.00325,  0.00888, -0.00030},
+    {2451810.21715, 365242.01767, -0.11575,  0.00337,  0.00078},
+    {2451900.05952, 365242.74049, -0.06223, -0.00823,  0.00032},
+  };
+  const double *a = c[k];
+  double Y   = (year - 2000) / 1000.0;
+  double jde = a[0] + Y * (a[1] + Y * (a[2] + Y * (a[3] + Y * a[4])));
+  return (long)((jde - 2440587.5) * 86400.0);  // Julian day -> Unix epoch
+}
+
+// The season about to start, then how many days off it is.
+bool showSeasons(long nowEpoch) {
+  if (nowEpoch < 1700000000L) return false;
+  static const char *const NAMES[4] = {"Spring", "Summer", "Autumn", "Winter"};
+  time_t t = (time_t)nowEpoch;
+  struct tm now;
+  localtime_r(&t, &now);
+  long today = daysFromCivil(now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
+
+  for (int y = now.tm_year + 1900; y <= now.tm_year + 1901; y++) {
+    for (int k = 0; k < 4; k++) {
+      time_t e = (time_t)seasonEpoch(y, k);
+      struct tm te;
+      localtime_r(&e, &te);
+      long d = daysFromCivil(te.tm_year + 1900, te.tm_mon + 1, te.tm_mday) - today;
+      if (d < 0) continue;
+      showFrame(NAMES[k], 1300);
+      char frame[12];
+      if (d == 0)      snprintf(frame, sizeof(frame), "Today!");
+      else if (d == 1) snprintf(frame, sizeof(frame), "Tomorrow");
+      else             snprintf(frame, sizeof(frame), "%ld days", d);
+      showFrame(frame, 1500);
+      return true;
+    }
+  }
+  return false;
+}
+
+
+//   ____ ___ ____
+//  / ___/ _ \___ \
+// | |  | | | |__) |
+// | |__| |_| / __/
+//  \____\___/_____|
+//
+// Atmospheric CO2 at Mauna Loa, from NOAA GML's daily record. The file is
+// ~570 KB going back to 1974, but the server honors Range requests, so we ask
+// for just the last 300 bytes and read the final line:
+// "  2026   9  30  2026.7452    425.81".
+#define CO2_URL         "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
+#define CO2_REFETCH_MS  43200000      // 12h -- it updates daily
+
+float g_co2 = -1;
+
+void fetchCo2() {
+  progBegin();
+  String tail;
+  if (!httpGet("CO2", CO2_URL, tail, "bytes=-300")) {
+    progEnd('X');
+    return;
+  }
+  tail.trim();
+  String line = tail.substring(tail.lastIndexOf('\n') + 1);
+  int Y, Mo, D;
+  float dec, ppm;
+  if (sscanf(line.c_str(), "%d %d %d %f %f", &Y, &Mo, &D, &dec, &ppm) == 5 && ppm > 0) {
+    g_co2 = ppm;
+    Serial.printf("CO2: %.2f ppm (%d-%02d-%02d)\n", ppm, Y, Mo, D);
+    progEnd('*');
+  } else {
+    Serial.printf("CO2: can't parse \"%s\"\n", line.c_str());
+    progEnd('X');
+  }
+}
+
+bool showCo2(long) {
+  if (g_co2 < 0) return false;
+  showFrame("CO2", 1300);
+  char frame[12];
+  snprintf(frame, sizeof(frame), "%.1fppm", g_co2);
+  showFrame(frame, 1500);
+  return true;
+}
+
+
+// __        __            _
+// \ \      / /__  _ __ __| |
+//  \ \ /\ / / _ \| '__/ _` |
+//   \ V  V / (_) | | | (_| |
+//    \_/\_/ \___/|_|  \__,_|
+//
+// Merriam-Webster's word of the day, from their RSS feed. The whole feed is
+// ~50 KB (ten days of entries with examples and etymology), but today's word
+// and its one-line definition are in the first ~2 KB, so we read only until
+// "See the entry" -- the link right after the definition -- and hang up.
+#define WOTD_URL        "https://www.merriam-webster.com/wotd/feed/rss2"
+#define WOTD_REFETCH_MS 21600000      // 6h
+#define WOTD_MAX_BYTES  8000          // give up if the marker never shows
+
+struct WordOfDay {
+  String word;  // "slew"
+  String pos;   // "noun"
+  String def;   // "Slew is an informal word for a large number of people or things."
+  bool   valid = false;
+};
+WordOfDay g_word;
+
+// HTML fragment -> plain display text: tags dropped, entities and non-ASCII
+// folded by asciiFold(), runs of whitespace collapsed.
+String stripTags(const String &html) {
+  String s;
+  bool inTag = false;
+  for (unsigned int i = 0; i < html.length(); i++) {
+    char c = html[i];
+    if (c == '<') inTag = true;
+    else if (c == '>') inTag = false;
+    else if (!inTag) s += (c == '\n' || c == '\t') ? ' ' : c;
+  }
+  s.replace("&nbsp;", " ");
+  for (int i = s.indexOf("&#"); i >= 0; i = s.indexOf("&#", i)) {  // numeric entities
+    int end = s.indexOf(';', i);
+    if (end < 0 || end - i > 8) break;
+    long n = s.substring(i + 2, end).toInt();
+    String r = (n == 8216 || n == 8217) ? "'" : (n == 8220 || n == 8221) ? "\""
+             : (n == 8211 || n == 8212) ? "-" : (n >= 32 && n < 127) ? String((char)n) : "";
+    s = s.substring(0, i) + r + s.substring(end + 1);
+  }
+  s = asciiFold(s);
+  while (s.indexOf("  ") >= 0) s.replace("  ", " ");
+  s.trim();
+  return s;
+}
+
+void fetchWord() {
+  progBegin();
+
+  HTTPClient http;
+  http.useHTTP10(true);  // a plain body, no chunk-size lines mixed in
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(WOTD_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("WOTD HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  String buf;
+  buf.reserve(WOTD_MAX_BYTES);
+  char chunk[257];
+  unsigned long start = millis();
+  while ((http.connected() || stream->available()) &&
+         buf.length() < WOTD_MAX_BYTES && millis() - start < 8000) {
+    size_t avail = stream->available();
+    if (avail == 0) { delay(1); continue; }
+    if (avail > sizeof(chunk) - 1) avail = sizeof(chunk) - 1;
+    size_t got = stream->readBytes(chunk, avail);
+    chunk[got] = '\0';
+    buf += chunk;
+    if (buf.indexOf("See the entry") >= 0) break;
+  }
+  http.end();
+
+  // <item><title><![CDATA[slew]]></title> ... <em>noun</em><br /> <p>definition</p>
+  int item = buf.indexOf("<item>");
+  int t0   = item < 0 ? -1 : buf.indexOf("<![CDATA[", item);
+  int t1   = t0 < 0 ? -1 : buf.indexOf("]]>", t0);
+  int br   = t1 < 0 ? -1 : buf.indexOf("<br />", t1);
+  int em1  = br < 0 ? -1 : buf.lastIndexOf("</em>", br);
+  int em0  = em1 < 0 ? -1 : buf.lastIndexOf("<em>", em1);
+  int p0   = br < 0 ? -1 : buf.indexOf("<p>", br);
+  int p1   = p0 < 0 ? -1 : buf.indexOf("</p>", p0);
+  if (p1 < 0 || em0 < t1) {
+    Serial.println("WOTD: couldn't find today's entry");
+    progEnd('X');
+    return;
+  }
+  g_word.word  = stripTags(buf.substring(t0 + 9, t1));
+  g_word.pos   = stripTags(buf.substring(em0 + 4, em1));
+  g_word.def   = stripTags(buf.substring(p0 + 3, p1));
+  g_word.valid = g_word.word.length() && g_word.def.length();
+  Serial.printf("WOTD: %s (%s)\n", g_word.word.c_str(), g_word.pos.c_str());
+  progEnd(g_word.valid ? '*' : '0');
+}
+
+// Word, the word, its part of speech, then the definition.
+bool showWord(long) {
+  if (!g_word.valid) return false;
+  showFrame("Word", 1300);
+  showFadeFrame(g_word.word, 1800);
+  if (g_word.pos.length()) showFrame(g_word.pos, 1300);
+  showFadeFrame(g_word.def, 2000);
+  return true;
+}
+//  ____                   _
+// / ___| _ __   ___  _ __| |_ ___
+// \___ \| '_ \ / _ \| '__| __/ __|
+//  ___) | |_) | (_) | |  | |_\__ \
+// |____/| .__/ \___/|_|   \__|___/
+//       |_|
+//
+// Next (or just-finished, or in-progress) game for each team below, from
+// ESPN's team endpoint -- free, no key, but unofficial. Each team's page is
+// 7-33 KB, with the game we want ("nextEvent") near the end, so:
+//  - only one team is refreshed per fetchSports() call: a team that's
+//    mid-game first (once a minute), otherwise the stalest one
+//  - the body is read off the stream: skip to "nextEvent", parse just that
+//    array through a filter, hang up
+// A team shows only while its game is live, finished within SPORTS_RECENT_S,
+// or starting within SPORTS_SOON_S -- so off-season teams just drop out.
+#define ESPN_URL_BASE          "https://site.api.espn.com/apis/site/v2/sports/"
+#define SPORTS_REFETCH_MS      1800000        // per team, when it isn't playing
+#define SPORTS_LIVE_REFETCH_MS 60000          // a team that's mid-game
+#define SPORTS_RECENT_S        (36L * 3600)   // keep showing a final this long after the start
+#define SPORTS_SOON_S          (72L * 3600)   // show an upcoming game this far ahead
+
+struct Team {
+  const char   *label;  // header frame
+  const char   *path;   // under ESPN_URL_BASE
+  const char   *abbr;   // ESPN's abbreviation for this team, to tell us from them
+  // the rest is the cache, zeroed/empty as a global
+  char          state;  // 'p' upcoming, 'i' in progress, 'f' final, 0 nothing
+  long          start;  // UTC
+  bool          home;
+  String        opp, usScore, oppScore;
+  String        detail; // ESPN's short status: "Bot 7th", "Q3 5:21"
+  bool          won, lost;
+  bool          fetched;
+  unsigned long fetchedMs;
+};
+Team g_teams[] = {
+  {"LIBERTY",  "basketball/wnba/teams/ny", "NY"},
+  {"KNICKS",   "basketball/nba/teams/ny",  "NY"},
+  {"METS",     "baseball/mlb/teams/nym",   "NYM"},
+  {"YANKEES",  "baseball/mlb/teams/nyy",   "NYY"},
+  {"NATS",     "baseball/mlb/teams/wsh",   "WSH"},
+  {"COMMNDRS", "football/nfl/teams/wsh",   "WSH"},
+};
+#define NUM_TEAMS (sizeof(g_teams) / sizeof(g_teams[0]))
+
+// ESPN's game times are "2026-09-27T17:05Z" -- no seconds, which
+// isoToEpoch() wants.
+long espnTimeToEpoch(const char *iso) {
+  long t = isoToEpoch(iso);
+  if (t) return t;
+  int Y, Mo, D, h, m;
+  if (sscanf(iso, "%d-%d-%dT%d:%d", &Y, &Mo, &D, &h, &m) < 5) return 0;
+  return daysFromCivil(Y, Mo, D) * 86400L + h * 3600L + m * 60L;
+}
+
+void fetchTeam(Team &t) {
+  progBegin();
+  t.fetched   = true;
+  t.fetchedMs = millis();
+
+  HTTPClient http;
+  http.useHTTP10(true);  // a plain body, no chunk-size lines mixed in
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
+  http.begin(String(ESPN_URL_BASE) + t.path);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("SPORTS %s HTTP %d\n", t.label, code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+
+  WiFiClient &stream = http.getStream();
+  if (!stream.find("\"nextEvent\":")) {
+    Serial.printf("SPORTS %s: no nextEvent\n", t.label);
+    http.end();
+    progEnd('X');
+    return;
+  }
+
+  JsonDocument filter;
+  filter[0]["date"] = true;
+  JsonObject fc = filter[0]["competitions"][0].to<JsonObject>();
+  fc["status"]["type"]["state"]       = true;
+  fc["status"]["type"]["shortDetail"] = true;
+  fc["competitors"][0]["homeAway"]             = true;
+  fc["competitors"][0]["winner"]               = true;
+  fc["competitors"][0]["score"]                = true;
+  fc["competitors"][0]["team"]["abbreviation"] = true;
+
+  JsonDocument doc;  // parses just the nextEvent array, then stops reading
+  DeserializationError err = deserializeJson(doc, stream, DeserializationOption::Filter(filter));
+  http.end();
+  if (err) {
+    Serial.printf("SPORTS %s JSON %s\n", t.label, err.c_str());
+    progEnd('X');
+    return;
+  }
+
+  t.state = 0;
+  JsonObject ev = doc[0];
+  if (ev.isNull()) {  // nothing scheduled -- off-season
+    Serial.printf("SPORTS %s: no game\n", t.label);
+    progEnd('0');
+    return;
+  }
+  JsonObject comp  = ev["competitions"][0];
+  String     state = comp["status"]["type"]["state"] | "";
+  for (JsonObject c : comp["competitors"].as<JsonArray>()) {
+    JsonVariant sc    = c["score"];  // {"displayValue":"6"} here, a bare string elsewhere
+    String      score = sc.is<JsonObject>() ? String(sc["displayValue"] | "") : String(sc | "");
+    if (String(c["team"]["abbreviation"] | "") == t.abbr) {
+      t.home    = String(c["homeAway"] | "") == "home";
+      t.usScore = score;
+      t.won     = c["winner"] | false;
+    } else {
+      t.opp      = String(c["team"]["abbreviation"] | "");
+      t.oppScore = score;
+      t.lost     = c["winner"] | false;
+    }
+  }
+  t.detail = String(comp["status"]["type"]["shortDetail"] | "");
+  t.start  = espnTimeToEpoch(ev["date"] | "");
+  t.state  = state == "pre" ? 'p' : state == "in" ? 'i' : state == "post" ? 'f' : 0;
+  Serial.printf("SPORTS %s: %c %s %s-%s %s\n", t.label, t.state ? t.state : '-',
+                t.opp.c_str(), t.usScore.c_str(), t.oppScore.c_str(), t.detail.c_str());
+  progEnd('*');
+}
+
+// Refreshes one team: a live game first, else whichever is most overdue.
+void fetchSports() {
+  Team *pick = nullptr;
+  for (Team &t : g_teams) {
+    if (t.state == 'i' && millis() - t.fetchedMs >= SPORTS_LIVE_REFETCH_MS) { pick = &t; break; }
+  }
+  if (!pick) {
+    for (Team &t : g_teams) {
+      if (t.fetched && millis() - t.fetchedMs < SPORTS_REFETCH_MS) continue;
+      if (!pick || (pick->fetched && (!t.fetched || t.fetchedMs < pick->fetchedMs))) pick = &t;
+    }
+  }
+  if (pick) fetchTeam(*pick);
+}
+
+bool teamIsNews(const Team &t, long now) {
+  if (t.state == 'i') return true;
+  if (now < 1700000000L) return false;
+  if (t.state == 'f') return now - t.start < SPORTS_RECENT_S;
+  if (t.state == 'p') return t.start - now < SPORTS_SOON_S;
+  return false;
+}
+
+bool hasSports() {
+  long now = (long)time(nullptr);
+  for (const Team &t : g_teams)
+    if (teamIsNews(t, now)) return true;
+  return false;
+}
+
+// One random team with a game worth mentioning:
+//   final:    METS / L 4-6 / @ WSH
+//   live:     METS / 4-6 / @ WSH / Bot 7th
+//   upcoming: KNICKS / @ PHI / Mon 7-00pm
+bool showSports(long nowEpoch) {
+  int live[NUM_TEAMS], n = 0;
+  for (size_t i = 0; i < NUM_TEAMS; i++)
+    if (teamIsNews(g_teams[i], nowEpoch)) live[n++] = i;
+  if (!n) return false;
+  const Team &t = g_teams[live[random(n)]];
+
+  String vs = (t.home ? "vs " : "@ ") + t.opp;
+  showFrame(t.label, 1300);
+  if (t.state == 'p') {
+    showFrame(vs, 1500);
+    time_t a = (time_t)t.start, b = (time_t)nowEpoch;
+    struct tm ta, tb;
+    localtime_r(&a, &ta);
+    localtime_r(&b, &tb);
+    long d = daysFromCivil(ta.tm_year + 1900, ta.tm_mon + 1, ta.tm_mday) -
+             daysFromCivil(tb.tm_year + 1900, tb.tm_mon + 1, tb.tm_mday);
+    static const char *const DOW[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    String day = d <= 0 ? "Today" : d == 1 ? "Tmrw" : DOW[ta.tm_wday];
+    showFadeFrame(day + " " + hhmmAmPm(t.start), 1500);
+  } else if (t.state == 'i') {
+    showFrame(t.usScore + "-" + t.oppScore, 1500);
+    showFrame(vs, 1300);
+    if (t.detail.length()) showFadeFrame(t.detail, 1500);
+  } else {
+    String result = t.won ? "W " : t.lost ? "L " : "T ";
+    showFrame(result + t.usScore + "-" + t.oppScore, 1800);
+    showFrame(vs, 1300);
   }
   return true;
 }
@@ -3291,7 +4439,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.6");
+  showText(" V 7.7");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -3320,89 +4468,100 @@ void setup() {
   }
 }
 
-// Fires true the first time it's called, then again once every intervalMs --
-// replaces the hand-copied "static lastMs + static first" pair each feed's
-// refetch gate used to carry.
-struct RefetchTimer {
-  unsigned long lastMs = 0;
-  bool first = true;
-  bool due(unsigned long intervalMs) {
-    if (!first && millis() - lastMs < intervalMs) return false;
-    first = false;
-    lastMs = millis();
-    return true;
-  }
-};
 
 // Everything that isn't an urgent alert or the plane. Each cycle picks
 // RANDOM_FEEDS_PER_CYCLE of these up front and runs only their fetches, so a
-// pass never waits on an API call for a feed it isn't about to show. `has`
-// says whether the feed has anything to draw once fetched (ISS and the
-// hurricane are usually empty), so the picker can skip to the next one.
-// fetch is nullptr for feeds computed locally; refetchMs 0 means the fetch
-// gates itself.
-#define RANDOM_FEEDS_PER_CYCLE 2
+// pass never waits on an API call for a feed it isn't about to show.
+//
+// `weight` is each feed's odds of being picked, relative to the others -- the
+// knob to turn when something shows up too often or not enough (0 = never).
+// `has` says whether the feed has anything to draw once fetched (ISS, the
+// hurricane, airport delays, high UV and the like are usually empty), so the
+// picker moves on to another. fetch is nullptr for feeds computed locally;
+// refetchMs 0 means the fetch gates itself.
+#define RANDOM_FEEDS_PER_CYCLE 3
 typedef bool (*FeedShow)(long nowEpoch);
 struct Feed {
+  int           weight;
+  const char   *name;   // for the serial log
   FeedShow      show;
   bool          (*has)();
   void          (*fetch)();
   unsigned long refetchMs;
 };
+
+bool hasBuses() {
+  for (size_t i = 0; i < NUM_BUS_FEEDS; i++) if (g_busCount[i]) return true;
+  return false;
+}
+bool hasHoroscope() {
+  for (size_t i = 0; i < NUM_HOROSCOPES; i++) if (g_horoscopes[i].valid) return true;
+  return false;
+}
+
 const Feed FEEDS[] = {
-  { [](long now) { return showArrivals(now); },  // F trains
-    [] { return g_haveTrainData; },       fetchTrains,      0 },
-  { [](long now) { return showBuses(now); },     // M14A, M9
-    [] { for (size_t i = 0; i < NUM_BUS_FEEDS; i++) if (g_busCount[i]) return true;
-         return false; },                 fetchBuses,       BUS_REFETCH_MS },
-  { [](long)     { return showCitibike(); },
-    [] { return g_citibikeBikes >= 0; },  fetchCitibike,    CITIBIKE_REFETCH_MS },
-  { [](long)     { return showWxNow(); },
-    [] { return g_wxNow.valid; },         fetchWxNow,       WXNOW_REFETCH_MS },
-  { [](long)     { return showWxForecast(); },
-    [] { return g_haveWxForecast; },      fetchWxForecast,  WXFC_REFETCH_MS },
-  { [](long now) { return showMoonPhase(now); },
-    [] { return true; },                  nullptr,          0 },
-  { [](long)     { return showSunTimes(); },
-    [] { return g_sun.valid; },           fetchSunTimes,    SUN_REFETCH_MS },
-  { [](long now) { return showTide(now); },
-    [] { return g_tideCount > 0; },       fetchTide,        TIDE_REFETCH_MS },
-  { [](long)     { return showIss(); },         // only while overhead
-    [] { return g_issOverhead; },         fetchIss,         ISS_REFETCH_MS },
-  { [](long)     { return showHurricane(); },
-    [] { return g_hurricane.valid; },     fetchHurricane,   NHC_REFETCH_MS },
-  { [](long)     { return showIceberg(); },
-    [] { return g_iceberg.valid; },       fetchIceberg,     EONET_REFETCH_MS },
-  { [](long)     { return showHoroscope(); },
-    [] { for (size_t i = 0; i < NUM_HOROSCOPES; i++) if (g_horoscopes[i].valid) return true;
-         return false; },                 fetchHoroscopes,  HOROSCOPE_REFETCH_MS },
-  { [](long)     { return showMagic8(); },
-    [] { return true; },                  nullptr,          0 },
-  { [](long now) { return showHoliday(now); },
-    [] { return g_holiday.valid; },       fetchHoliday,     HOLIDAY_REFETCH_MS },
-  { [](long)     { return showNews(); },
-    [] { return g_newsCount > 0; },       fetchNews,        NEWS_REFETCH_MS },
-  { [](long)     { return showStocks(); },
-    [] { return g_stocks.valid; },        fetchStocks,      STOCKS_REFETCH_MS },
+// weight name          show            has                                        fetch            refetchMs
+  { 8,  "trains",      showArrivals,   [] { return g_haveTrainData; },            fetchTrains,     0 },
+  { 6,  "buses",       showBuses,      hasBuses,                                  fetchBuses,      BUS_REFETCH_MS },
+  { 4,  "citibike",    showCitibike,   [] { return g_citibikeBikes >= 0; },       fetchCitibike,   CITIBIKE_REFETCH_MS },
+  { 6,  "wx now",      showWxNow,      [] { return g_wxNow.valid; },              fetchWxNow,      WXNOW_REFETCH_MS },
+  { 5,  "forecast",    showWxForecast, [] { return g_haveWxForecast; },           fetchWxForecast, WXFC_REFETCH_MS },
+  { 4,  "air",         showAir,        [] { return g_air.aqi >= 0; },             fetchAir,        0 },
+  { 4,  "uv",          showUv,         [] { return g_air.uv >= UV_SHOW_MIN; },    fetchAir,        0 },
+  { 6,  "airports",    showAirports,   hasAirportDelays,                          fetchAirports,   FAA_REFETCH_MS },
+  { 6,  "sports",      showSports,     hasSports,                                 fetchSports,     0 },
+  { 5,  "news",        showNews,       [] { return g_newsCount > 0; },            fetchNews,       NEWS_REFETCH_MS },
+  { 4,  "stocks",      showStocks,     [] { return g_spx.valid; },                fetchStocks,     QUOTE_REFETCH_MS },
+  { 3,  "yen",         showYen,        [] { return g_yen.valid; },                fetchYen,        QUOTE_REFETCH_MS },
+  { 2,  "bitcoin",     showBitcoin,    [] { return g_btc.valid; },                fetchBitcoin,    QUOTE_REFETCH_MS },
+  { 3,  "tokyo",       showTokyo,      [] { return g_tokyo.valid; },              fetchTokyo,      TOKYO_WX_REFETCH_MS },
+  { 2,  "jp holiday",  showJpHoliday,  [] { return g_jpHoliday.valid; },          fetchJpHoliday,  HOLIDAY_REFETCH_MS },
+  { 2,  "holiday",     showHoliday,    [] { return g_holiday.valid; },            fetchHoliday,    HOLIDAY_REFETCH_MS },
+  { 3,  "sun",         showSunTimes,   [] { return g_sun.valid; },                fetchSunTimes,   SUN_REFETCH_MS },
+  { 2,  "daylight",    showDaylight,   [] { return g_dayLen[0] > 0 && g_dayLen[1] > 0; }, fetchDaylight, DAYLEN_REFETCH_MS },
+  { 1,  "seasons",     showSeasons,    [] { return true; },                       nullptr,         0 },
+  { 2,  "moon",        showMoonPhase,  [] { return true; },                       nullptr,         0 },
+  { 3,  "tide",        showTide,       [] { return g_tideCount > 0; },            fetchTide,       TIDE_REFETCH_MS },
+  { 2,  "water",       showWater,      [] { return g_waterF > -100; },            fetchWater,      WATER_REFETCH_MS },
+  { 6,  "iss",         showIss,        [] { return g_issOverhead; },              fetchIss,        ISS_REFETCH_MS },
+  { 5,  "hurricane",   showHurricane,  [] { return g_hurricane.valid; },          fetchHurricane,  NHC_REFETCH_MS },
+  { 3,  "launch",      showLaunch,     hasLaunch,                                 fetchLaunch,     LAUNCH_REFETCH_MS },
+  { 2,  "asteroid",    showAsteroid,   [] { return g_rock.valid; },               fetchAsteroid,   CAD_REFETCH_MS },
+  { 1,  "iceberg",     showIceberg,    [] { return g_iceberg.valid; },            fetchIceberg,    EONET_REFETCH_MS },
+  { 1,  "co2",         showCo2,        [] { return g_co2 > 0; },                  fetchCo2,        CO2_REFETCH_MS },
+  { 3,  "word",        showWord,       [] { return g_word.valid; },               fetchWord,       WOTD_REFETCH_MS },
+  { 2,  "horoscope",   showHoroscope,  hasHoroscope,                              fetchHoroscopes, HOROSCOPE_REFETCH_MS },
+  { 2,  "magic 8",     showMagic8,     [] { return true; },                       nullptr,         0 },
 };
 #define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
 
-// Walks a shuffled copy of FEEDS, fetching each candidate if it's due, until
-// RANDOM_FEEDS_PER_CYCLE of them have data. Fills `out` with their indices
-// and returns how many it found.
+// Draws feeds at random, weighted by FEEDS[].weight and without repeats,
+// fetching each candidate if it's due, until RANDOM_FEEDS_PER_CYCLE of them
+// have data. Fills `out` with their indices and returns how many it found.
 int pickFeeds(size_t out[RANDOM_FEEDS_PER_CYCLE]) {
   static RefetchTimer timers[NUM_FEEDS];
-  size_t order[NUM_FEEDS];
-  for (size_t i = 0; i < NUM_FEEDS; i++) order[i] = i;
-  for (size_t i = NUM_FEEDS - 1; i > 0; i--) {  // Fisher-Yates
-    size_t j = random(i + 1);
-    size_t t = order[i]; order[i] = order[j]; order[j] = t;
-  }
+  bool tried[NUM_FEEDS] = {false};
   int picked = 0;
-  for (size_t i = 0; i < NUM_FEEDS && picked < RANDOM_FEEDS_PER_CYCLE; i++) {
-    const Feed &f = FEEDS[order[i]];
-    if (f.fetch && timers[order[i]].due(f.refetchMs)) f.fetch();
-    if (f.has()) out[picked++] = order[i];
+  while (picked < RANDOM_FEEDS_PER_CYCLE) {
+    long total = 0;
+    for (size_t i = 0; i < NUM_FEEDS; i++) if (!tried[i]) total += FEEDS[i].weight;
+    if (total <= 0) break;  // ran out of candidates
+
+    long r = random(total);
+    size_t i = 0;
+    for (;; i++) {
+      if (tried[i]) continue;
+      if (r < FEEDS[i].weight) break;
+      r -= FEEDS[i].weight;
+    }
+    tried[i] = true;
+
+    const Feed &f = FEEDS[i];
+    if (f.fetch && timers[i].due(f.refetchMs)) f.fetch();
+    if (f.has()) {
+      out[picked++] = i;
+      Serial.printf("pick: %s\n", f.name);
+    }
   }
   return picked;
 }
@@ -3446,9 +4605,9 @@ void loop() {
       //     O-O               O-O
 
       // The plan, each pass:
-      // - pick this cycle's two random feeds (see pickFeeds())
+      // - pick this cycle's random feeds (see pickFeeds())
       // - fetch only what's about to be shown -- alerts, the plane, and those
-      //   two -- each still gated by its own refetch interval
+      //   picks -- each still gated by its own refetch interval
       // - draw everything from the caches
 
       progReset();  // start a fresh loading clock for whatever fetches fire below
@@ -3466,6 +4625,14 @@ void loop() {
       // --- USGS: check for a big Tokyo quake -----------------------------
       static RefetchTimer eqTimer;
       if (eqTimer.due(EQ_REFETCH_MS)) fetchQuake();
+
+      // --- adsb.lol: any plane near NYC squawking an emergency -----------
+      static RefetchTimer sqkTimer;
+      if (sqkTimer.due(SQK_REFETCH_MS)) fetchSquawks();
+
+      // --- SWPC: geomagnetic storm strong enough for an aurora here -------
+      static RefetchTimer kpTimer;
+      if (kpTimer.due(KP_REFETCH_MS)) fetchKp();
 
       // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
       // Same decoupled pattern as the trains: poll here, draw from the cache.
@@ -3492,7 +4659,7 @@ void loop() {
         }
       }
 
-      // --- The two random feeds for this cycle, fetched only if due ---------
+      // --- This cycle's random feeds, fetched only if due ------------------
       size_t picks[RANDOM_FEEDS_PER_CYCLE];
       int numPicks = pickFeeds(picks);
 
@@ -3504,7 +4671,8 @@ void loop() {
         nowEpoch = g_trainFetchEpoch + (long)((millis() - g_lastTrainFetchMs) / 1000);
       }
 
-      // Every cycle: urgent alerts first (NWS, NYC OEM, Tokyo quake) if present...
+      // Every cycle: urgent alerts first (NWS, NYC OEM, Tokyo quake, squawks,
+      // aurora) if present...
 
       // weather alert, source tag then just the title. Header is centered
       // ("-=NWS=-") rather than left-justified like the other source tags.
@@ -3541,10 +4709,20 @@ void loop() {
         showFadeFrame(g_quakeLine, 2500);
       }
 
+      // ...a plane near NYC squawking 7500/7700/7600...
+      showAlert(g_squawkTag.c_str(), g_squawkLine);
+
+      // ...a geomagnetic storm strong enough to push the aurora this far south...
+      if (g_kp >= AURORA_KP) {
+        char line[64];
+        snprintf(line, sizeof(line), "Kp %.1f - northern lights possible, look north", g_kp);
+        showAlert(center8("AURORA").c_str(), line);
+      }
+
       // ...then the plane on final, if there is one...
       if (g_plane.valid) showPlane(g_plane);
 
-      // ...then the two random feeds picked above.
+      // ...then the random feeds picked above.
       for (int i = 0; i < numPicks; i++) FEEDS[picks[i]].show(nowEpoch);
     } else {
       Serial.println("Not connected to Wi-Fi.");

@@ -21,9 +21,15 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   `Fv  6min`, ... (`F<dir>  NOW` when one's basically here, `NO F TRN` when
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
 - **Display cycle**: every cycle shows any urgent alert (NWS, NYC OEM, Tokyo
-  quake), then the plane if there is one, then `RANDOM_FEEDS_PER_CYCLE` (2)
-  other feeds picked at random from those with something to show. Only those
-  feeds (plus alerts and the plane) are fetched that cycle.
+  quake, emergency squawk, aurora), then the plane if there is one, then
+  `RANDOM_FEEDS_PER_CYCLE` (3) other feeds picked at random from those with
+  something to show, weighted by the `weight` column of the `FEEDS` table in
+  `main.cpp`. Only those feeds (plus alerts and the plane) are fetched that
+  cycle.
+- **Emergency squawk**: a plane within 150 mi squawking 7500 (hijack), 7700
+  (emergency) or 7600 (radio failure) — a blinking `SQK 7700`, then the
+  callsign, type, distance, direction and altitude. Checked every 2 min.
+- **Aurora**: when NOAA's Kp index hits 7+, a blinking `AURORA` alert. Rare.
 - **Plane on approach**: when an `A3` (large / airliner) aircraft is between
   `ADSB_ALT_MIN` and `ADSB_ALT_MAX` feet inside the over-Brooklyn box, a
   `*PLANE*` block — callsign (`AAL 1389`), airline, aircraft type (`Airbus
@@ -123,7 +129,27 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   random, scrolls across. Refreshed every 15 min.
 - **Stocks**: `STOCKS`, then the S&P 500 level, point change, percent change,
   and the level again. Blinks throughout on a move of 2% or more either way.
+  `YEN` (yen per dollar, blinks at 1%) and `BITCOIN` (5%) work the same way.
   Refreshed every 5 min.
+- **Airport delays**: `DELAYS`, then a line per affected airport among EWR,
+  LGA and JFK (`LGA GROUND STOP TIL 9:15 pm - thunderstorms`). Only when
+  there is one.
+- **Sports**: the Liberty, Knicks, Mets, Yankees, Nats and Commanders —
+  a live score, a final from the last 36 h (`L 4-6`, `@ WSH`), or a game in
+  the next 3 days (`Mon 7-00pm`).
+- **Tokyo**: the time, temperature and sky in Kita City. `Japan` shows the
+  next Japanese public holiday, like the US one.
+- **Air / UV**: AQI and what it means, blinking once it's unhealthy; UV
+  index only when it's 6 (high) or more.
+- **Water**: harbor water temperature at The Battery.
+- **Launch**: the next rocket launch anywhere — mission, rocket, `T-5h12m`.
+- **Asteroid**: the closest flyby in the next week — name, size, miss
+  distance, when.
+- **Daylight**: today's day length and the change since yesterday
+  (`-2m40s`). `Winter` / `81 days` counts down to the next solstice or
+  equinox.
+- **CO2**: today's Mauna Loa reading (`425.8ppm`).
+- **Word**: Merriam-Webster's word of the day, part of speech, definition.
 - **Iceberg**: the biggest open Antarctic iceberg (name, sq mi, how many
   Manhattans), via NASA EONET.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
@@ -285,9 +311,10 @@ More pictures coming
 
 1. Set the mode switch to **RUN** position (HIGH).
 2. The device connects to WiFi, syncs the clock over NTP, and starts fetching arrival data.
-3. Each cycle: any urgent alert (NWS, NYC OEM, Tokyo quake), then the
-   `*PLANE*` block if an airliner is on final into LGA, then two random feeds
-   (trains, buses, weather, moon, tide, ...) out of those with data.
+3. Each cycle: any urgent alert (NWS, NYC OEM, Tokyo quake, squawk, aurora),
+   then the `*PLANE*` block if an airliner is on final into LGA, then three
+   weighted-random feeds (trains, buses, weather, sports, ...) out of those
+   with data.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
 
 ### Serial Monitor
@@ -528,8 +555,33 @@ More pictures coming
   the Up First newsletter and Spanish-language stories.
 - **Stocks**: [`query1.finance.yahoo.com/v8/finance/chart/%5EGSPC`](https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d)
   — free, no key, but undocumented, so it could break without notice.
-  `fetchStocks()` reads `meta.regularMarketPrice` and `meta.chartPreviousClose`
+  `fetchQuote()` reads `meta.regularMarketPrice` and `meta.chartPreviousClose`
   and computes the change itself. Outside market hours it's the last close.
+  Same endpoint for `JPY%3DX` and `BTC-USD`.
+- **Emergency squawks**: [`api.adsb.lol/v2/sqk/{code}`](https://api.adsb.lol/docs)
+  — every aircraft worldwide on that squawk; usually an empty ~100-byte answer.
+- **Airport status**: [`nasstatus.faa.gov/api/airport-status-information`](https://nasstatus.faa.gov/)
+  — FAA, free, no key, ~2 KB of XML for the whole country.
+- **Kp index**: [`services.swpc.noaa.gov/products/noaa-planetary-k-index.json`](https://www.swpc.noaa.gov/products/planetary-k-index)
+  — NOAA SWPC, free, no key.
+- **Sports**: [`site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team}`](https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/nym)
+  — unofficial, no key. 7-33 KB per team, so one team is refreshed per pass
+  (a live game first), read off the stream only as far as `nextEvent`.
+- **Tokyo weather, air quality, UV**: [Open-Meteo](https://open-meteo.com/)
+  forecast and air-quality APIs — free, no key, ~400 bytes each.
+- **Water temperature**: the same NOAA CO-OPS API as tides,
+  `product=water_temperature`.
+- **Launches**: [`ll.thespacedevs.com/2.3.0/launches/upcoming/`](https://thespacedevs.com/llapi)
+  — free tier is 15 requests an hour, so it's polled hourly.
+- **Asteroids**: [`ssd-api.jpl.nasa.gov/cad.api`](https://ssd-api.jpl.nasa.gov/doc/cad.html)
+  — NASA/JPL close-approach data, free, no key.
+- **Daylight**: the sunrise-sunset API again, `date=today` and
+  `date=yesterday`, for `day_length`. Equinoxes and solstices are computed
+  on the board (Meeus, *Astronomical Algorithms* ch. 27).
+- **CO2**: [`gml.noaa.gov/.../co2_daily_mlo.txt`](https://gml.noaa.gov/ccgg/trends/data.html)
+  — a ~570 KB file, fetched with `Range: bytes=-300` for just the last line.
+- **Word of the day**: [`merriam-webster.com/wotd/feed/rss2`](https://www.merriam-webster.com/word-of-the-day)
+  — ~50 KB, but read only until the first definition (~2.4 KB).
 - **Natural events**: [`eonet.gsfc.nasa.gov/api/v3/events`](https://eonet.gsfc.nasa.gov/docs/v3)
   — NASA EONET, free, no key. Icebergs only, `magMin=` filtered to the
   giants; fetched once a day.
@@ -590,6 +642,12 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.7
+ - Oct 1, 2026
+ - Added feeds: emergency squawks and aurora (alerts), airport delays,
+   sports, yen, bitcoin, Tokyo, Japanese holidays, air quality, UV, water
+   temperature, launches, asteroids, daylight, seasons, CO2, word of the day.
+ - Three random feeds per cycle, weighted by a `weight` column in `FEEDS`.
  - version 7.6
  - Oct 1, 2026
  - Added an NPR news feed: blinking `NEWS`, then a random top-10 headline.
@@ -798,6 +856,10 @@ Feel free to submit issues or pull requests for improvements!
 - Weather alerts, current conditions, and forecasts via [api.weather.gov](https://www.weather.gov/documentation/services-web-api) (NWS).
 - NYC emergency alerts via [Notify NYC](https://a858-nycnotify.nyc.gov/) (NYC Office of Emergency Management).
 - Earthquakes via the [USGS FDSN event API](https://earthquake.usgs.gov/fdsnws/event/1/).
+- Airport status via the [FAA](https://nasstatus.faa.gov/); geomagnetic data via [NOAA SWPC](https://www.swpc.noaa.gov/).
+- Scores via [ESPN](https://www.espn.com/); Tokyo weather, air quality and UV via [Open-Meteo](https://open-meteo.com/).
+- Launches via [The Space Devs](https://thespacedevs.com/); asteroid flybys via [NASA/JPL](https://ssd-api.jpl.nasa.gov/).
+- CO2 via [NOAA GML](https://gml.noaa.gov/ccgg/trends/); word of the day via [Merriam-Webster](https://www.merriam-webster.com/word-of-the-day).
 - Citi Bike dock counts via the [GBFS](https://github.com/MobilityData/gbfs) feed.
 - ISS position via [wheretheiss.at](https://wheretheiss.at/w/developer).
 - Hurricane tracking via the [National Hurricane Center](https://www.nhc.noaa.gov/).
