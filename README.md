@@ -121,11 +121,11 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 - **Tide**: `High` or `Low` then the next tide's time and height
   (`3-45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
 - **Magic 8 Ball**: a pulsing `<8-BALL>` intro, then a random answer
-  (classic or snarky) scrambles in through segment noise and scrolls.
+  (upbeat or silly) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
   (nationwide, or NY specifically), then a countdown (`29d`), via
   [Nager.Date](https://date.nager.at/).
-- **News**: a blinking `NEWS`, then one of NPR's top 10 headlines, picked at
+- **News**: `NEWS` pulses in and out, then one of NPR's top 10 headlines, picked at
   random, scrolls across. Refreshed every 15 min.
 - **Stocks**: `STOCKS`, then the S&P 500 level, point change, percent change,
   and the level again. Blinks throughout on a move of 2% or more either way.
