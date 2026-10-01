@@ -69,8 +69,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   after 24 h.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
   Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.5) *or*
-  tsunami-flagged, `QUAKE` (or `TSUNAMI`) shakes, then `M5.2 74 KM NE OF
-  KITA` scrolls — distance and direction from Kita City, like the weather alert. Checked
+  tsunami-flagged, `QUAKE` (or `TSUNAMI`) shakes, then `M5.2 74 KM NE`
+  scrolls — distance and direction from Kita City, like the weather alert. Checked
   every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
 - **Citi Bike**: bikes and docks available at Clinton St & Grand St, summed
   across the two station IDs Citi Bike splits that corner into (a main rack

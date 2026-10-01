@@ -2555,7 +2555,7 @@ String oemAgeText(long now) {
 // (or "" when nothing).
 
 String g_quakeTag;   // "QUAKE" or "TSUNAMI"
-String g_quakeLine;  // "M5.2 74 KM NE OF KITA"; "" when quiet
+String g_quakeLine;  // "M5.2 74 KM NE"; "" when quiet
 
 float haversineKm(float lat1, float lon1, float lat2, float lon2);
 float bearingDeg(float lat1, float lon1, float lat2, float lon2);
@@ -2605,7 +2605,7 @@ void fetchQuake() {
     float km  = haversineKm(EQ_REF_LAT, EQ_REF_LON, lat, lon);
     g_quakeTag   = tsu ? "TSUNAMI" : "QUAKE";
     g_quakeLine  = "M" + String(mag, 1) + " " + String((int)roundf(km)) + " KM ";
-    g_quakeLine += String(compass8(bearingDeg(EQ_REF_LAT, EQ_REF_LON, lat, lon))) + " OF KITA";
+    g_quakeLine += String(compass8(bearingDeg(EQ_REF_LAT, EQ_REF_LON, lat, lon)));
     break;
   }
   Serial.printf("EQ: %s\n", g_quakeLine.length() ? g_quakeLine.c_str() : "(none)");
