@@ -2304,6 +2304,195 @@ bool showHoliday(long nowEpoch) {
 }
 
 
+//  _   _ ____  ____
+// | \ | |  _ \|  _ \
+// |  \| | |_) | |_) |
+// | |\  |  __/|  _ <
+// |_| \_|_|   |_| \_\
+//
+// NPR headlines, scraped from text.npr.org -- NPR's text-only site, ~6 KB,
+// listed in homepage order (unlike the RSS feeds, which are newest-first and
+// mix in the Up First newsletter and Spanish-language stories). Each
+// headline is an <a class="topic-title">; we keep the first NEWS_MAX and
+// show a random one each time.
+#define NEWS_URL         "https://text.npr.org/"
+#define NEWS_REFETCH_MS  900000     // 15 min
+#define NEWS_MAX         10
+
+String g_news[NEWS_MAX];
+int    g_newsCount = 0;
+
+// Headline text -> what the 14-segment font can draw: HTML entities decoded,
+// and the common non-ASCII UTF-8 (curly quotes, dashes, accented letters)
+// folded to plain ASCII. Anything else non-ASCII is dropped.
+String asciiFold(const String &in) {
+  String s = in;
+  s.replace("&amp;", "&");
+  s.replace("&quot;", "\"");
+  s.replace("&#39;", "'");
+  s.replace("&#x27;", "'");
+  s.replace("&apos;", "'");
+  s.replace("&lt;", "<");
+  s.replace("&gt;", ">");
+  s.replace("\xE2\x80\x98", "'");   // curly single quotes
+  s.replace("\xE2\x80\x99", "'");
+  s.replace("\xE2\x80\x9C", "\"");  // curly double quotes
+  s.replace("\xE2\x80\x9D", "\"");
+  s.replace("\xE2\x80\x93", "-");   // en dash
+  s.replace("\xE2\x80\x94", "-");   // em dash
+  s.replace("\xE2\x80\xA6", "...");
+
+  String out;
+  for (unsigned int i = 0; i < s.length(); i++) {
+    uint8_t c = s[i];
+    if (c < 0x80) { out += (char)c; continue; }
+    if (c == 0xC3 && i + 1 < s.length()) {   // Latin-1 letters: U+00C0-U+00FF
+      static const char latin[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPsaaaaaaaceeeeiiiidnooooo/ouuuuypy";
+      uint8_t lo = s[i + 1];
+      if (lo >= 0x80 && lo <= 0xBF) out += latin[lo - 0x80];
+      i++;
+      continue;
+    }
+    // other multi-byte sequence: skip its continuation bytes
+    while (i + 1 < s.length() && ((uint8_t)s[i + 1] & 0xC0) == 0x80) i++;
+  }
+  out.trim();
+  return out;
+}
+
+void fetchNews() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(NEWS_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("NEWS HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String page = http.getString();
+  http.end();
+
+  int n = 0;
+  int at = 0;
+  while (n < NEWS_MAX) {
+    at = page.indexOf("class=\"topic-title\"", at);
+    if (at < 0) break;
+    int start = page.indexOf('>', at) + 1;
+    int end   = page.indexOf("</a>", start);
+    if (start <= 0 || end < 0) break;
+    String h = asciiFold(page.substring(start, end));
+    if (h.length()) g_news[n++] = h;
+    at = end;
+  }
+  if (n) g_newsCount = n;  // a bad scrape keeps the last good batch
+  Serial.printf("NEWS: %d headlines\n", n);
+  progEnd(n ? '*' : '0');
+}
+
+// A blinking NEWS tag, then one random headline scrolling steady -- same
+// look as the NWS alert.
+bool showNews() {
+  if (!g_newsCount) return false;
+  showAlert(center8("NEWS").c_str(), g_news[random(g_newsCount)]);
+  return true;
+}
+
+
+//  ____   ___   ____    ____   ___   ___
+// / ___| ( _ ) |  _ \  | ___| / _ \ / _ \
+// \___ \ / _ \/\ |_) | |___ \| | | | | | |
+//  ___) | (_>  <  __/   ___) | |_| | |_| |
+// |____/ \___/\/_|     |____/ \___/ \___/
+//
+// S&P 500 level and today's change, via Yahoo Finance's chart endpoint --
+// free and keyless, but undocumented (the one behind their own site), so it
+// could start refusing us or change shape without notice. Live during market
+// hours; otherwise it's the last close and that day's change. The change is
+// computed from chartPreviousClose rather than read from Yahoo's own change
+// fields, so it only depends on the two numbers.
+#define STOCKS_URL        "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d"
+#define STOCKS_REFETCH_MS 300000      // 5 min
+#define STOCKS_BIG_PCT    2.0f        // |change| at/above this -> the whole thing blinks
+
+struct Stocks {
+  float price     = 0;
+  float prevClose = 0;
+  bool  valid     = false;
+};
+Stocks g_stocks;
+
+void fetchStocks() {
+  progBegin();
+
+  HTTPClient http;
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(STOCKS_URL);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("STOCKS HTTP %d\n", code);
+    http.end();
+    progEnd('X');
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["chart"]["result"][0]["meta"]["regularMarketPrice"] = true;
+  filter["chart"]["result"][0]["meta"]["chartPreviousClose"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    Serial.println("STOCKS JSON parse error");
+    progEnd('X');
+    return;
+  }
+
+  JsonObject meta = doc["chart"]["result"][0]["meta"];
+  float price = meta["regularMarketPrice"] | 0.0f;
+  float prev  = meta["chartPreviousClose"] | 0.0f;
+  if (price > 0 && prev > 0) {  // a bad fetch keeps the last good quote
+    g_stocks.price     = price;
+    g_stocks.prevClose = prev;
+    g_stocks.valid     = true;
+  }
+  Serial.printf("STOCKS: %.2f (prev %.2f)\n", price, prev);
+  progEnd(price > 0 && prev > 0 ? '*' : '0');
+}
+
+// STOCKS, the level, the point change, the percent change, then the level
+// again to finish on. A move of STOCKS_BIG_PCT or more either way blinks the
+// whole sequence.
+bool showStocks() {
+  if (!g_stocks.valid) return false;
+  float chg = g_stocks.price - g_stocks.prevClose;
+  float pct = chg / g_stocks.prevClose * 100.0f;
+  bool  big = fabsf(pct) >= STOCKS_BIG_PCT;
+
+  char price[12], pts[12], pctTxt[12];
+  snprintf(price,  sizeof(price),  "%.2f", g_stocks.price);
+  snprintf(pts,    sizeof(pts),    "%+.2f", chg);
+  snprintf(pctTxt, sizeof(pctTxt), "%+.2f%%", pct);
+
+  if (big) blink(true);
+  showFrame(center8("STOCKS"), 1300);
+  showFrame(price,  1800);
+  showFrame(pts,    1500);
+  showFrame(pctTxt, 1500);
+  showFrame(price,  1500);
+  if (big) blink(false);
+  return true;
+}
+
+
 //                          ___  _____ __  __
 //   _ __  _   _  ___      / _ \| ____|  \/  |
 //  | '_ \| | | |/ __|    | | | |  _| | |\/| |
@@ -3102,7 +3291,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.5");
+  showText(" V 7.6");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -3191,6 +3380,10 @@ const Feed FEEDS[] = {
     [] { return true; },                  nullptr,          0 },
   { [](long now) { return showHoliday(now); },
     [] { return g_holiday.valid; },       fetchHoliday,     HOLIDAY_REFETCH_MS },
+  { [](long)     { return showNews(); },
+    [] { return g_newsCount > 0; },       fetchNews,        NEWS_REFETCH_MS },
+  { [](long)     { return showStocks(); },
+    [] { return g_stocks.valid; },        fetchStocks,      STOCKS_REFETCH_MS },
 };
 #define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
 

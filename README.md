@@ -119,6 +119,11 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
   (nationwide, or NY specifically), then a countdown (`29d`), via
   [Nager.Date](https://date.nager.at/).
+- **News**: a blinking `NEWS`, then one of NPR's top 10 headlines, picked at
+  random, scrolls across. Refreshed every 15 min.
+- **Stocks**: `STOCKS`, then the S&P 500 level, point change, percent change,
+  and the level again. Blinks throughout on a move of 2% or more either way.
+  Refreshed every 5 min.
 - **Iceberg**: the biggest open Antarctic iceberg (name, sq mi, how many
   Manhattans), via NASA EONET.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
@@ -516,6 +521,15 @@ More pictures coming
   `fetchHoliday()` keeps the first entry that's either `global` or lists
   `US-NY`, so a state-specific holiday elsewhere in the list doesn't get
   shown as if it applied at home. Refreshed every 12h.
+- **News**: [`text.npr.org`](https://text.npr.org/) — NPR's text-only site,
+  ~6 KB of HTML, headlines in homepage order. `fetchNews()` keeps the first 10
+  `<a class="topic-title">` texts, folded to plain ASCII. The RSS feeds
+  (`feeds.npr.org/1001/rss.xml`) were skipped: newest-first, and they mix in
+  the Up First newsletter and Spanish-language stories.
+- **Stocks**: [`query1.finance.yahoo.com/v8/finance/chart/%5EGSPC`](https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d)
+  — free, no key, but undocumented, so it could break without notice.
+  `fetchStocks()` reads `meta.regularMarketPrice` and `meta.chartPreviousClose`
+  and computes the change itself. Outside market hours it's the last close.
 - **Natural events**: [`eonet.gsfc.nasa.gov/api/v3/events`](https://eonet.gsfc.nasa.gov/docs/v3)
   — NASA EONET, free, no key. Icebergs only, `magMin=` filtered to the
   giants; fetched once a day.
@@ -576,6 +590,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.6
+ - Oct 1, 2026
+ - Added an NPR news feed: blinking `NEWS`, then a random top-10 headline.
+ - Added an S&P 500 feed: level, point and percent change; blinks on a 2%+ day.
  - version 7.5
  - Oct 1, 2026
  - Tokyo quake: `QUAKE` shakes, then a steady scroll of magnitude and
@@ -786,6 +804,8 @@ Feel free to submit issues or pull requests for improvements!
 - Sunrise/sunset via [sunrise-sunset.org](https://sunrise-sunset.org/).
 - Tide predictions via [NOAA CO-OPS](https://api.tidesandcurrents.noaa.gov/api-helper/documentation.html), station 8518750 (The Battery, NY).
 - Holidays via [Nager.Date](https://date.nager.at/).
+- Headlines via [NPR](https://text.npr.org/).
+- S&P 500 quotes via [Yahoo Finance](https://finance.yahoo.com/quote/%5EGSPC/).
 - Natural events via [NASA EONET](https://eonet.gsfc.nasa.gov/).
 - ESP32 code reused from Andy's ADS-B plane spotter, itself reused from Andy's Ping Tester project. https://github.com/andyhomecode/pingtester
 - Uses open-source libraries and APIs.
