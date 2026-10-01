@@ -68,9 +68,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   Followed by its age (`3H AGO`); shown every other cycle after 12 h, dropped
   after 24 h.
 - **Tokyo earthquake**: a personal touch — if USGS lists a quake within 300 km of
-  Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.3) *or*
-  tsunami-flagged, one blinking line scrolls across: `TOKYO EQ M4.7 74 KM E OF
-  TOMIOKA, JAPAN` (or `TSUNAMI ...`) — shown just like the weather alert. Checked
+  Tokyo in the last 24 h that's **magnitude ≥ `EQ_MIN_MAG`** (4.5) *or*
+  tsunami-flagged, `QUAKE` (or `TSUNAMI`) shakes, then `M5.2 74 KM NE OF
+  KITA` scrolls — distance and direction from Kita City, like the weather alert. Checked
   every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
 - **Citi Bike**: bikes and docks available at Clinton St & Grand St, summed
   across the two station IDs Citi Bike splits that corner into (a main rack
@@ -322,7 +322,7 @@ More pictures coming
   `api.weather.gov/alerts/active?point=<lat>,<lon>` URL. `WX_REFETCH_MS` (default
   300000) is how often it's polled.
 - **Earthquake watch**: `EQ_URL` (the `latitude`/`longitude`/`maxradiuskm` in it
-  aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (4.3), `EQ_MAX_AGE_S` (86400 =
+  aim it — default Tokyo, 300 km), `EQ_MIN_MAG` (4.5), `EQ_MAX_AGE_S` (86400 =
   24 h), `EQ_REFETCH_MS` (600000). Shows a quake only if `mag >= EQ_MIN_MAG`
   **or** it's tsunami-flagged, and only within the age window.
 - **Sun/tide location**: `SUN_URL` (lat/lng) and `TIDE_URL`'s `station` param
@@ -576,6 +576,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.5
+ - Oct 1, 2026
+ - Tokyo quake: `QUAKE` shakes, then a steady scroll of magnitude and
+   distance from Kita City (`M5.2 74 KM NE OF KITA`); only M4.5+ now.
  - version 7.4
  - Sep 28, 2026
  - Magic 8 Ball intro is a pulsing `<8-BALL>` instead of a scroll.

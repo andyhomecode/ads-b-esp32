@@ -163,9 +163,11 @@
 // mag >= EQ_MIN_MAG or tsunami-flagged, AND it happened in the last EQ_MAX_AGE_S
 // seconds -- needs an NTP clock for that window.
 #define EQ_URL          "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=35.68&longitude=139.77&maxradiuskm=300&minmagnitude=4&orderby=time&limit=5"
-#define EQ_MIN_MAG      4.3f
+#define EQ_MIN_MAG      4.5f
 #define EQ_MAX_AGE_S    86400         // 24 h
 #define EQ_REFETCH_MS   600000        // 10 min
+#define EQ_REF_LAT      35.7528f      // Kita City (Kita-ku) ward office --
+#define EQ_REF_LON      139.7336f     // distance/direction is measured from here
 
 // --- ISS overhead ping -----------------------------------------------------
 // wheretheiss.at is a free, no-key, single-satellite position API -- one
@@ -438,6 +440,24 @@ String center8(const String &s) {
   return out;
 }
 
+
+// Centers a short tag (<= 7 chars, so there's room to move) and jiggles it a
+// column left/right a few times before it settles, then holds -- the quake
+// banner's "shake". Clamped to the 8 columns, so a 7-char tag like TSUNAMI
+// just rocks between its two possible spots.
+void shakeText(const String &s, int holdMs = 1200) {
+  int pad  = 8 - (int)s.length();
+  int home = pad / 2;  // same spot center8() would put it
+  int lo = max(home - 1, 0), hi = min(home + 1, pad);
+  for (int i = 0; i < 8; i++) {
+    int off = (i % 2) ? hi : lo;
+    writeRawFrame(String("        ").substring(0, off) + s, -1);
+    delay(70);
+  }
+  g_frame = center8(s);
+  writeRawFrame(g_frame, -1);
+  delay(holdMs);
+}
 
 void blink(bool blinkOn) {
 
@@ -2530,10 +2550,16 @@ String oemAgeText(long now) {
 //
 // A notable earthquake near Tokyo. USGS gives the recent M4+ list; we surface
 // one only if it's mag >= EQ_MIN_MAG or tsunami-flagged, and only if it landed
-// in the last EQ_MAX_AGE_S seconds. g_quakeLine is one ready-to-scroll string
-// (or "" when nothing) -- shown exactly like a weather alert.
+// in the last EQ_MAX_AGE_S seconds. Shown like a weather alert, except
+// g_quakeTag shakes instead of blinking, then g_quakeLine scrolls steady
+// (or "" when nothing).
 
-String g_quakeLine;  // "TOKYO EQ M4.7 74 KM E OF TOMIOKA, JAPAN"; "" when quiet
+String g_quakeTag;   // "QUAKE" or "TSUNAMI"
+String g_quakeLine;  // "M5.2 74 KM NE OF KITA"; "" when quiet
+
+float haversineKm(float lat1, float lon1, float lat2, float lon2);
+float bearingDeg(float lat1, float lon1, float lat2, float lon2);
+const char *compass8(float deg);
 
 void fetchQuake() {
   long now = (long)time(nullptr);
@@ -2574,11 +2600,12 @@ void fetchQuake() {
     if (age < 0 || age > EQ_MAX_AGE_S) continue;            // too old / clock skew
     if (mag < EQ_MIN_MAG && !tsu) continue;                 // not big enough, no tsunami
 
-    String place = String(pr["place"] | "");
-    place.toUpperCase();
-    g_quakeLine  = tsu ? "TSUNAMI " : "TOKYO EQ ";
-    g_quakeLine += "M" + String(mag, 1);
-    if (place.length()) g_quakeLine += " " + place;
+    JsonArray xy = f["geometry"]["coordinates"];             // [lon, lat, depth]
+    float lon = xy[0] | 0.0f, lat = xy[1] | 0.0f;
+    float km  = haversineKm(EQ_REF_LAT, EQ_REF_LON, lat, lon);
+    g_quakeTag   = tsu ? "TSUNAMI" : "QUAKE";
+    g_quakeLine  = "M" + String(mag, 1) + " " + String((int)roundf(km)) + " KM ";
+    g_quakeLine += String(compass8(bearingDeg(EQ_REF_LAT, EQ_REF_LON, lat, lon))) + " OF KITA";
     break;
   }
   Serial.printf("EQ: %s\n", g_quakeLine.length() ? g_quakeLine.c_str() : "(none)");
@@ -2620,7 +2647,7 @@ float bearingDeg(float lat1, float lon1, float lat2, float lon2) {
 
 // Nearest 8-point compass letter(s) for a bearing -- used by the hurricane
 // feed below, for both "which way is it from home" and "which way is it
-// heading".
+// heading" -- and the Tokyo quake's direction from Kita.
 const char *compass8(float deg) {
   static const char *pts[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
   int idx = ((int)((deg + 22.5f) / 45.0f)) % 8;
@@ -3075,7 +3102,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.4");
+  showText(" V 7.5");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -3313,11 +3340,12 @@ void loop() {
         if (age.length()) showFadeFrame(center8(age), 1500);
       }
 
-      // ...a notable Tokyo earthquake in the last 24h -- same as the weather alert.
+      // ...a notable Tokyo earthquake in the last 24h -- like the weather
+      // alert, but the tag shakes instead of blinking.
       if (g_quakeLine.length()) {
-        blink(true);
+        setBrightnessBoth(BRIGHT_FULL);
+        shakeText(g_quakeTag);
         showFadeFrame(g_quakeLine, 2500);
-        blink(false);
       }
 
       // ...then the plane on final, if there is one...
