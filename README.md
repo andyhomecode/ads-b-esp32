@@ -152,7 +152,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   equinox.
 - **CO2**: today's Mauna Loa reading (`425.8ppm`) and how far it's up over
   pre-industrial 280 ppm (`+52%`).
-- **Word**: Merriam-Webster's word of the day, part of speech, definition.
+- **Word**: Merriam-Webster's word of the day, part of speech, and the first
+  sentence of the definition.
 - **Iceberg**: the biggest open Antarctic iceberg (name, sq mi, how many
   Manhattans), via NASA EONET.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and

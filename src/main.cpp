@@ -301,6 +301,8 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 //   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
 //   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
 //   top bar  -- the crest of the tide banner's wave, over '-' and '_'
+// A character with its high bit set is that character plus the decimal point
+// in the same column -- see withDots().
 #define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
 #define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
 #define GLYPH_TOP    ALPHANUM_SEG_A
@@ -318,8 +320,24 @@ uint16_t glyphFor(char c) {
   if (c == GLYPH_DOWN_CH) return GLYPH_DOWN;
   if (c == GLYPH_UP_CH)   return GLYPH_UP;
   if (c == GLYPH_TOP_CH)  return GLYPH_TOP;
+  if ((uint8_t)c & 0x80)  return glyphFor(c & 0x7F) | ALPHANUM_SEG_DP;
   g_fontLookup.writeDigitAscii(0, c);
   return g_fontLookup.displaybuffer[0];
+}
+
+// Folds each '.' into the character before it, lit as that column's decimal
+// point, so "M5.2" takes 3 columns instead of 4.
+String withDots(const String &s) {
+  String out;
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    int last = (int)out.length() - 1;
+    if (c == '.' && last >= 0 && out[last] != ' ' && !((uint8_t)out[last] & 0x80))
+      out.setCharAt(last, out[last] | 0x80);
+    else
+      out += c;
+  }
+  return out;
 }
 
 // Raw segment bitmasks for all 8 columns -> both backpacks (columns 0-3 on
@@ -2228,7 +2246,7 @@ bool showTide(long nowEpoch) {
   showFrame(next->type == 'H' ? "High" : "Low", 1300);
   char frame[20];
   snprintf(frame, sizeof(frame), "%d-%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
-  showFadeFrame(frame, 2200);
+  showFadeFrame(withDots(frame), 2200);
   return true;
 }
 
@@ -2519,10 +2537,10 @@ bool showQuote(const Quote &q) {
 
   if (big) blink(true);
   showFrame(center8(q.label), 1300);
-  showFrame(price,  1800);
-  showFrame(pts,    1500);
-  showFrame(pctTxt, 1500);
-  showFrame(price,  1500);
+  showFrame(withDots(price),  1800);
+  showFrame(withDots(pts),    1500);
+  showFrame(withDots(pctTxt), 1500);
+  showFrame(withDots(price),  1500);
   if (big) blink(false);
   return true;
 }
@@ -3638,7 +3656,7 @@ bool showAsteroid(long nowEpoch) {
   showFadeFrame(frame, 1500);
   if (g_rock.mi < 1000000.0f) snprintf(frame, sizeof(frame), "%dK mi", (int)(g_rock.mi / 1000.0f));
   else                        snprintf(frame, sizeof(frame), "%.1fM mi", g_rock.mi / 1000000.0f);
-  showFrame(frame, 1500);
+  showFrame(withDots(frame), 1500);
   showFrame(daysAwayText(g_rock.epoch, nowEpoch), 1500);
   return true;
 }
@@ -3880,7 +3898,7 @@ bool showCo2(long) {
   g_frame = "        ";
   char frame[40];
   snprintf(frame, sizeof(frame), "%.1fppm", g_co2);
-  showFrame(frame, 1500);
+  showFrame(withDots(frame), 1500);
   snprintf(frame, sizeof(frame), "+%d%% over pre-industrial",
            (int)roundf((g_co2 / CO2_PREINDUSTRIAL - 1) * 100));
   showFadeFrame(frame, 1500);
@@ -3985,8 +4003,9 @@ void fetchWord() {
     return;
   }
   g_word.word  = stripTags(buf.substring(t0 + 9, t1));
+  g_word.word.toUpperCase();  // easier to read than lowercase on 14 segments
   g_word.pos   = stripTags(buf.substring(em0 + 4, em1));
-  g_word.def   = stripTags(buf.substring(p0 + 3, p1));
+  g_word.def   = firstSentence(stripTags(buf.substring(p0 + 3, p1)));
   g_word.valid = g_word.word.length() && g_word.def.length();
   Serial.printf("WOTD: %s (%s)\n", g_word.word.c_str(), g_word.pos.c_str());
   progEnd(g_word.valid ? '*' : '0');
@@ -4940,7 +4959,7 @@ void loop() {
       if (g_quakeLine.length()) {
         setBrightnessBoth(BRIGHT_FULL);
         shakeText(g_quakeTag);
-        showFadeFrame(g_quakeLine, 2500);
+        showFadeFrame(withDots(g_quakeLine), 2500);
       }
 
       // ...a plane near NYC squawking 7500/7700/7600...
@@ -4950,7 +4969,7 @@ void loop() {
       if (g_kp >= AURORA_KP) {
         char line[64];
         snprintf(line, sizeof(line), "Kp %.1f - northern lights possible, look north", g_kp);
-        showAlert(center8("AURORA").c_str(), line);
+        showAlert(center8("AURORA").c_str(), withDots(line));
       }
 
       // ...then the plane on final, if there is one...
