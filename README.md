@@ -127,6 +127,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [Nager.Date](https://date.nager.at/).
 - **News**: `NEWS` pulses in and out, then one of NPR's top 10 headlines, picked at
   random, scrolls across. Refreshed every 15 min.
+- **Sonos**: `PLAYING`, then artist and song (or NPR show and episode) when the
+  Living Room / Dining Room group is playing, read off the speakers over the LAN.
 - **Stocks**: `STOCKS`, then the S&P 500 level, point change, percent change,
   and the level again. Blinks throughout on a move of 2% or more either way.
   `YEN` (yen per dollar, blinks at 1%) and `BITCOIN` (5%) work the same way.
@@ -642,6 +644,13 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.8
+ - Oct 2, 2026
+ - Added a Sonos now-playing feed: Spotify, Sonos Radio, and NPR One episodes
+   looked up in NPR's podcast feeds.
+ - Banners that scroll all the way through for buses (`[O O BUS O O]`), the
+   forecast, tides (a wave around `TIDE`) and seasons.
+ - `Moon` fades in and out, centered; `**CO2**` scrambles in and out.
  - version 7.7
  - Oct 1, 2026
  - Added feeds: emergency squawks and aurora (alerts), airport delays,

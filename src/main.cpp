@@ -31,6 +31,7 @@
 
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiUdp.h>    // SSDP, to find the Sonos speakers
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
@@ -294,15 +295,18 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 #define BRIGHT_DIM   1   // while a frame fades/scrolls in
 #define BRIGHT_MIN   0   // dimmest still-lit level -- the loading clock
 
-// Two custom 14-segment glyphs for the train direction, carried through the
-// string/scroll pipeline as sentinel bytes: wherever one lands in a frame,
-// writeRawFrame() renders it raw instead of as ASCII.
+// Custom 14-segment glyphs, carried through the string/scroll pipeline as
+// sentinel bytes: wherever one lands in a frame, writeRawFrame() renders it
+// raw instead of as ASCII.
 //   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
 //   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
+//   top bar  -- the crest of the tide banner's wave, over '-' and '_'
 #define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
 #define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
+#define GLYPH_TOP    ALPHANUM_SEG_A
 #define GLYPH_DOWN_CH '\x01'
 #define GLYPH_UP_CH   '\x02'
+#define GLYPH_TOP_CH  '\x03'
 
 
 // Font lookup only -- never begun, so it never touches the bus. The library's
@@ -313,6 +317,7 @@ Adafruit_AlphaNum4 g_fontLookup = Adafruit_AlphaNum4();
 uint16_t glyphFor(char c) {
   if (c == GLYPH_DOWN_CH) return GLYPH_DOWN;
   if (c == GLYPH_UP_CH)   return GLYPH_UP;
+  if (c == GLYPH_TOP_CH)  return GLYPH_TOP;
   g_fontLookup.writeDigitAscii(0, c);
   return g_fontLookup.displaybuffer[0];
 }
@@ -419,6 +424,31 @@ void marqueeRest(const String &text) {
   }
   g_frame = text.substring(text.length() - 8);
   delay(1000);
+}
+
+// A banner that rides all the way through: in from past the right edge,
+// across at full brightness, and off the left, pushing whatever was showing
+// ahead of it. Leaves the display blank for the next frame to slide in.
+void scrollAcross(const String &text, int stepMs = 110) {
+  fadeBrightnessBoth(BRIGHT_FULL, 8);
+  String buf = g_frame + text + "        ";
+  for (int i = 1; i <= (int)buf.length() - 8; i++) {
+    writeRawFrame(buf.substring(i, i + 8), -1);
+    delay(stepMs);
+  }
+  g_frame = "        ";
+}
+
+// A banner that fades up in place, holds, and fades back out, leaving the
+// display blank. (Brightness 0 is still lit, hence the blank frames.)
+void fadeInOut(const String &text, int holdMs = 900) {
+  fadeBrightnessBoth(0, 8);
+  writeRawFrame(text, -1);
+  fadeBrightnessBoth(BRIGHT_FULL, 40);
+  delay(holdMs);
+  fadeBrightnessBoth(0, 40);
+  g_frame = "        ";
+  writeRawFrame(g_frame, -1);
 }
 
 // Like showFrame(), but for content that can run longer than 8 columns
@@ -1368,15 +1398,21 @@ void fetchBuses() {
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) fetchOneBusFeed(fi);
 }
 
-// For each stop with buses, run through the upcoming arrivals, each one its own
-// frame carrying the route tag and the countdown: "M14 12mn" / "M9 12min" /
-// "M14 NOW". "min" is trimmed to "mn" when the whole thing would overflow the 8
-// columns (M14 + two-digit minutes). SIRI hands them back soonest-first already.
+bool hasBuses() {
+  for (size_t i = 0; i < NUM_BUS_FEEDS; i++) if (g_busCount[i]) return true;
+  return false;
+}
+
+// "[O O BUS O O]" rolls through, then for each stop with buses, run through the
+// upcoming arrivals, each one its own frame carrying the route tag and the
+// countdown: "M14 12mn" / "M9 12min" / "M14 NOW". "min" is trimmed to "mn" when
+// the whole thing would overflow the 8 columns (M14 + two-digit minutes). SIRI
+// hands them back soonest-first already.
 bool showBuses(long nowEpoch) {
-  bool any = false;
+  if (!hasBuses()) return false;
+  scrollAcross("[O O BUS O O]");
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
-    any = true;
 
     const char *disp = BUS_FEEDS[fi].disp;
     for (int i = 0; i < g_busCount[fi]; i++) {
@@ -1394,7 +1430,7 @@ bool showBuses(long nowEpoch) {
       showFrame(frame, 1300);
     }
   }
-  return any;
+  return true;
 }
 
 
@@ -1744,6 +1780,7 @@ void fetchWxForecast() {
 // treatment like the conditions text above.
 bool showWxForecast(long) {
   if (!g_haveWxForecast) return false;
+  scrollAcross("AND NOW FOR YOUR LOCAL FORECAST");
   for (int i = 0; i < WXFC_PERIODS; i++) {
     if (!g_wxForecast[i].name.length()) continue;
     showText(g_wxForecast[i].name, -1, 1800);
@@ -1987,7 +2024,7 @@ const char *moonPhaseName(double phase) {
 
 bool showMoonPhase(long nowEpoch) {
   double phase = moonPhaseDays(nowEpoch);
-  showFrame("Moon", 1300);
+  fadeInOut(center8("Moon"));
   showFadeFrame(moonPhaseName(phase), 2200);
 
   // Whichever of new/full moon is closer, counting forward from today --
@@ -2187,6 +2224,7 @@ bool showTide(long nowEpoch) {
   int h12 = h % 12;
   if (h12 == 0) h12 = 12;
 
+  scrollAcross("_-\x03 TIDE \x03-_");  // a wave: bottom, middle, top bar
   showFrame(next->type == 'H' ? "High" : "Low", 1300);
   char frame[20];
   snprintf(frame, sizeof(frame), "%d-%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
@@ -2337,6 +2375,7 @@ String asciiFold(const String &in) {
   s.replace("\xE2\x80\x93", "-");   // en dash
   s.replace("\xE2\x80\x94", "-");   // em dash
   s.replace("\xE2\x80\xA6", "...");
+  s.replace("\xC2\xA0", " ");       // no-break space
 
   String out;
   for (unsigned int i = 0; i < s.length(); i++) {
@@ -3783,6 +3822,7 @@ bool showSeasons(long nowEpoch) {
       localtime_r(&e, &te);
       long d = daysFromCivil(te.tm_year + 1900, te.tm_mon + 1, te.tm_mday) - today;
       if (d < 0) continue;
+      scrollAcross("* Season *");
       showFrame(NAMES[k], 1300);
       char frame[12];
       if (d == 0)      snprintf(frame, sizeof(frame), "Today!");
@@ -3834,7 +3874,9 @@ void fetchCo2() {
 
 bool showCo2(long) {
   if (g_co2 < 0) return false;
-  showFrame("CO2", 1300);
+  showNoiseFrame(center8("**CO2**"), 1300);  // scrambles in...
+  noiseMorph(g_frame, "        ", -1);         // ...and back out
+  g_frame = "        ";
   char frame[12];
   snprintf(frame, sizeof(frame), "%.1fppm", g_co2);
   showFrame(frame, 1500);
@@ -4154,6 +4196,311 @@ bool showSports(long nowEpoch) {
 }
 
 
+//  ____
+// / ___|  ___  _ __   ___  ___
+// \___ \ / _ \| '_ \ / _ \/ __|
+//  ___) | (_) | | | | (_) \__ \
+// |____/ \___/|_| |_|\___/|___/
+//
+// What the Sonos in this room is playing, asked of the speakers themselves
+// over the LAN (UPnP SOAP on port 1400 -- no key, no cloud). Only a group's
+// lead speaker knows the track, and the lead is whichever one playback was
+// started from, so each fetch asks any speaker for the group layout, finds the
+// group holding one of SONOS_ROOMS, then asks its lead. That first speaker is
+// found by SSDP and kept until it stops answering.
+//
+// Spotify and Sonos Radio send artist and title. NPR One sends only the audio
+// URL: a newscast just says so, and a podcast episode is looked up in NPR's
+// feed for the show (the URL's `p=`) by its episode ID (`awEpisodeId=`).
+const char *const SONOS_ROOMS[] = { "Living Room", "Dining Room" };
+#define SONOS_REFETCH_MS   15000      // fresh whenever it's picked -- a cycle runs longer than this
+#define SONOS_FIND_MS      300000     // with no speaker known, search again this often
+#define SONOS_SSDP_PORT    51900      // our end of the SSDP search
+#define NPR_FEED_URL_BASE  "https://feeds.npr.org/"
+#define NPR_FEED_MAX_BYTES 65536      // newest episodes come first; give up past this
+
+struct NowPlaying {
+  String who;   // "Bobbi Humphrey", "Up First", "NPR"
+  String what;  // "The Sidewinder", the episode title, "Newscast"
+  bool   valid = false;
+};
+NowPlaying g_sonos;
+String     g_sonosIp;  // any speaker in the house; the group layout comes from it
+
+// SSDP: multicast a search for Sonos players and take the first to answer.
+String sonosFind() {
+  WiFiUDP udp;
+  if (!udp.begin(SONOS_SSDP_PORT)) return "";
+  udp.beginPacket(IPAddress(239, 255, 255, 250), 1900);
+  udp.print("M-SEARCH * HTTP/1.1\r\n"
+            "HOST: 239.255.255.250:1900\r\n"
+            "MAN: \"ssdp:discover\"\r\n"
+            "MX: 1\r\n"
+            "ST: urn:schemas-upnp-org:device:ZonePlayer:1\r\n\r\n");
+  udp.endPacket();
+
+  String ip;
+  char buf[512];
+  unsigned long start = millis();
+  while (!ip.length() && millis() - start < 2000) {
+    if (udp.parsePacket() <= 0) { delay(10); continue; }
+    int n = udp.read(buf, sizeof(buf) - 1);
+    buf[n > 0 ? n : 0] = '\0';
+    if (strstr(buf, "Sonos")) ip = udp.remoteIP().toString();  // a Hue bridge answers every search
+  }
+  udp.stop();
+  return ip;
+}
+
+// One SOAP call to a speaker: `service` is the UPnP service ("AVTransport"),
+// `path` its control URL, `args` the action's arguments as XML.
+bool sonosSoap(const String &ip, const char *path, const char *service,
+               const char *action, const char *args, String &out) {
+  String urn = String("urn:schemas-upnp-org:service:") + service + ":1";
+  HTTPClient http;
+  http.setConnectTimeout(1500);
+  http.setTimeout(2000);
+  http.begin("http://" + ip + ":1400" + path);
+  http.addHeader("Content-Type", "text/xml; charset=\"utf-8\"");
+  http.addHeader("SOAPACTION", "\"" + urn + "#" + action + "\"");
+  int code = http.POST(String("<?xml version=\"1.0\"?>"
+      "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+      "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:") +
+      action + " xmlns:u=\"" + urn + "\">" + args + "</u:" + action + "></s:Body></s:Envelope>");
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("SONOS %s HTTP %d\n", action, code);
+    http.end();
+    return false;
+  }
+  out = http.getString();
+  http.end();
+  return true;
+}
+
+// Sonos nests XML inside XML, escaped once per level.
+String xmlUnescape(String s) {
+  s.replace("&lt;", "<");
+  s.replace("&gt;", ">");
+  s.replace("&quot;", "\"");
+  s.replace("&amp;", "&");  // last, so "&amp;apos;" comes out "&apos;" for asciiFold()
+  return s;
+}
+
+// Value of `key` in a URL's query string, or "".
+String urlParam(const String &url, const char *key) {
+  String k = String(key) + "=";
+  int i = url.indexOf("?" + k);
+  if (i < 0) i = url.indexOf("&" + k);
+  if (i < 0) return "";
+  i += k.length() + 1;
+  int j = url.indexOf('&', i);
+  return url.substring(i, j < 0 ? url.length() : j);
+}
+
+// The lead speaker's IP for the group holding one of SONOS_ROOMS, from the
+// group layout: <ZoneGroup Coordinator="RINCON_..."> around members like
+// <ZoneGroupMember UUID="RINCON_..." Location="http://192.168.1.20:1400/..." ZoneName="Desk">.
+String sonosLeadIp(const String &layout) {
+  for (const char *room : SONOS_ROOMS) {
+    int m = layout.indexOf(String("ZoneName=\"") + room + "\"");
+    int g = m < 0 ? -1 : layout.lastIndexOf("<ZoneGroup ", m);
+    int c = g < 0 ? -1 : layout.indexOf("Coordinator=\"", g);
+    if (c < 0) continue;
+    c += 13;
+    String uuid = layout.substring(c, layout.indexOf('"', c));
+    int u = layout.indexOf("UUID=\"" + uuid + "\"", g);
+    int l = u < 0 ? -1 : layout.indexOf("Location=\"http://", u);
+    if (l < 0) continue;
+    l += 17;
+    return layout.substring(l, layout.indexOf(':', l));
+  }
+  return "";
+}
+
+// Drops the reissue tags streaming services tack on: "So Danco Samba -
+// 1996 Remastered", "Help! (Remastered 2009)", "Song - Mono Version".
+String sonosCleanTitle(String t) {
+  for (;;) {
+    int cut = (t.endsWith(")") || t.endsWith("]"))
+                ? max(t.lastIndexOf(" ("), t.lastIndexOf(" ["))
+                : t.lastIndexOf(" - ");
+    if (cut <= 0) return t;
+    String tail = t.substring(cut);
+    tail.toLowerCase();
+    if (tail.indexOf("remaster") < 0 && tail.indexOf("version") < 0 &&
+        tail.indexOf("mono") < 0 && tail.indexOf("stereo") < 0) return t;
+    t = t.substring(0, cut);
+  }
+}
+
+// NPR One podcast episode -> show name and episode title, from NPR's feed for
+// the show. The feed runs to megabytes but is newest-first, so stream it and
+// stop at the episode. Each <item>'s <title> comes before its audio URL (which
+// carries the episode ID), so the last title seen when the ID turns up is the
+// episode's; the feed's first title is the show's. False if the feed didn't
+// load; `episode` stays empty if it loaded but the episode wasn't near the top.
+bool nprEpisode(const String &showId, const String &episodeId, String &show, String &episode) {
+  HTTPClient http;
+  http.useHTTP10(true);  // a plain body, no chunk-size lines mixed in
+  http.setUserAgent(USER_AGENT);
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
+  http.begin(NPR_FEED_URL_BASE + showId + "/podcast.xml");
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("NPR FEED HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  String buf, title;
+  show = "";
+  episode = "";
+  char chunk[257];
+  size_t total = 0;
+  unsigned long start = millis();
+  while (!episode.length() && (http.connected() || stream->available()) &&
+         total < NPR_FEED_MAX_BYTES && millis() - start < 8000) {
+    size_t avail = stream->available();
+    if (avail == 0) { delay(1); continue; }
+    if (avail > sizeof(chunk) - 1) avail = sizeof(chunk) - 1;
+    size_t got = stream->readBytes(chunk, avail);
+    chunk[got] = '\0';
+    total += got;
+    buf += chunk;
+
+    for (;;) {
+      int t0 = buf.indexOf("<title>");
+      int id = buf.indexOf(episodeId);
+      if (id >= 0 && (t0 < 0 || id < t0)) { episode = title; break; }
+      int t1 = t0 < 0 ? -1 : buf.indexOf("</title>", t0);
+      if (t1 < 0) {  // no whole title buffered yet: keep enough to finish a split match
+        buf.remove(0, t0 >= 0 ? t0 : max(0, (int)buf.length() - 64));
+        break;
+      }
+      title = buf.substring(t0 + 7, t1);
+      title.replace("<![CDATA[", "");
+      title.replace("]]>", "");
+      title = asciiFold(title);
+      if (!show.length()) show = title;
+      buf.remove(0, t1 + 8);
+    }
+  }
+  http.end();
+
+  show.replace(" from NPR", "");  // "Up First from NPR"
+  Serial.printf("NPR FEED %s: %s / %s\n", showId.c_str(), show.c_str(),
+                episode.length() ? episode.c_str() : "(episode not found)");
+  return true;
+}
+
+// NPR One track URL -> who/what. The feed lookup is cached per episode.
+void sonosNpr(const String &uri, NowPlaying &np) {
+  np.who = "NPR";
+  if (uri.indexOf("isNewscast=true") >= 0 || uri.indexOf("/newscasts/") >= 0) {
+    np.what = "Newscast";
+    return;
+  }
+  static String cachedEp, cachedShow, cachedTitle;
+  String ep = urlParam(uri, "awEpisodeId"), showId = urlParam(uri, "p");
+  if (ep.length() && showId.length() && ep != cachedEp) {
+    String show, title;
+    if (nprEpisode(showId, ep, show, title)) {  // a failed load retries next fetch
+      cachedEp    = ep;
+      cachedShow  = show;
+      cachedTitle = title;
+    }
+  }
+  if (ep.length() && ep == cachedEp) {
+    if (cachedShow.length()) np.who = cachedShow;
+    np.what = cachedTitle;
+  }
+}
+
+void fetchSonos() {
+  static RefetchTimer findTimer;
+  g_sonos.valid = false;
+  if (!g_sonosIp.length() && !findTimer.due(SONOS_FIND_MS)) return;
+
+  progBegin();
+  if (!g_sonosIp.length()) {
+    g_sonosIp = sonosFind();
+    Serial.printf("SONOS: found %s\n", g_sonosIp.length() ? g_sonosIp.c_str() : "nothing");
+    if (!g_sonosIp.length()) {
+      progEnd('X');
+      return;
+    }
+  }
+
+  String resp;
+  if (!sonosSoap(g_sonosIp, "/ZoneGroupTopology/Control", "ZoneGroupTopology",
+                 "GetZoneGroupState", "", resp)) {
+    g_sonosIp = "";  // gone or moved -- search again
+    progEnd('X');
+    return;
+  }
+  String lead = sonosLeadIp(xmlUnescape(xmlTag(resp, "ZoneGroupState")));
+  if (!lead.length()) {
+    Serial.println("SONOS: room not found");
+    progEnd('0');
+    return;
+  }
+
+  const char *AVT = "/MediaRenderer/AVTransport/Control";
+  const char *ID0 = "<InstanceID>0</InstanceID>";
+  if (!sonosSoap(lead, AVT, "AVTransport", "GetTransportInfo", ID0, resp)) {
+    progEnd('X');
+    return;
+  }
+  String state = xmlTag(resp, "CurrentTransportState");
+  if (state != "PLAYING") {
+    Serial.printf("SONOS: %s\n", state.c_str());
+    progEnd('0');
+    return;
+  }
+  if (!sonosSoap(lead, AVT, "AVTransport", "GetPositionInfo", ID0, resp)) {
+    progEnd('X');
+    return;
+  }
+
+  String uri    = xmlUnescape(xmlTag(resp, "TrackURI"));
+  String meta   = xmlUnescape(xmlTag(resp, "TrackMetaData"));
+  String title  = asciiFold(xmlTag(meta, "dc:title"));
+  String artist = asciiFold(xmlTag(meta, "dc:creator"));
+  String radio  = asciiFold(xmlTag(meta, "r:streamContent"));  // "ARTIST - TITLE" on some stations
+  if (title.startsWith("x-")) title = "";                       // some stations put the stream URL here
+  if (radio.startsWith("ZPSTR_")) radio = "";                   // "ZPSTR_BUFFERING" and the like
+
+  NowPlaying np;
+  if (title.length() && artist.length()) {
+    np.who  = artist;
+    np.what = sonosCleanTitle(title);
+  } else if (radio.length()) {
+    int dash = radio.indexOf(" - ");
+    np.who  = dash < 0 ? "" : radio.substring(0, dash);
+    np.what = dash < 0 ? radio : radio.substring(dash + 3);
+  } else if (uri.indexOf("NPROne=true") >= 0) {
+    sonosNpr(uri, np);
+  } else {
+    np.what = sonosCleanTitle(title);
+  }
+  np.valid = np.who.length() || np.what.length();
+  g_sonos = np;
+  Serial.printf("SONOS: %s / %s\n", np.who.c_str(), np.what.c_str());
+  progEnd(np.valid ? '*' : '0');
+}
+
+// PLAYING, then who (artist / show) and what (song / episode).
+bool showSonos(long) {
+  if (!g_sonos.valid) return false;
+  showFrame(center8("PLAYING"), 1300);
+  if (g_sonos.who.length())  showFadeFrame(g_sonos.who, 1500);
+  if (g_sonos.what.length()) showFadeFrame(g_sonos.what, 2000);
+  return true;
+}
+
+
 // __        ___ _____ _   ___         ____             __ _
 // \ \      / (_)  ___(_) / _ \ ___   / ___|___  _ __  / _(_) __ _
 //  \ \ /\ / /| | |_  | | | | / __| | |   / _ \| '_ \| |_| |/ _` |
@@ -4325,7 +4672,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.7");
+  showText(" V 7.8");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -4376,10 +4723,6 @@ struct Feed {
   unsigned long refetchMs;
 };
 
-bool hasBuses() {
-  for (size_t i = 0; i < NUM_BUS_FEEDS; i++) if (g_busCount[i]) return true;
-  return false;
-}
 bool hasHoroscope() {
   for (size_t i = 0; i < NUM_HOROSCOPES; i++) if (g_horoscopes[i].valid) return true;
   return false;
@@ -4397,6 +4740,7 @@ const Feed FEEDS[] = {
   { 6,  "airports",    showAirports,   hasAirportDelays,                          fetchAirports,   FAA_REFETCH_MS },
   { 6,  "sports",      showSports,     hasSports,                                 fetchSports,     0 },
   { 5,  "news",        showNews,       [] { return g_newsCount > 0; },            fetchNews,       NEWS_REFETCH_MS },
+  { 6,  "sonos",       showSonos,      [] { return g_sonos.valid; },              fetchSonos,      SONOS_REFETCH_MS },
   { 4,  "stocks",      showStocks,     [] { return g_spx.valid; },                fetchStocks,     QUOTE_REFETCH_MS },
   { 3,  "yen",         showYen,        [] { return g_yen.valid; },                fetchYen,        QUOTE_REFETCH_MS },
   { 2,  "bitcoin",     showBitcoin,    [] { return g_btc.valid; },                fetchBitcoin,    QUOTE_REFETCH_MS },
