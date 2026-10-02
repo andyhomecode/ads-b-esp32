@@ -150,7 +150,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 - **Daylight**: today's day length and the change since yesterday
   (`-2m40s`). `Winter` / `81 days` counts down to the next solstice or
   equinox.
-- **CO2**: today's Mauna Loa reading (`425.8ppm`).
+- **CO2**: today's Mauna Loa reading (`425.8ppm`) and how far it's up over
+  pre-industrial 280 ppm (`+52%`).
 - **Word**: Merriam-Webster's word of the day, part of speech, definition.
 - **Iceberg**: the biggest open Antarctic iceberg (name, sq mi, how many
   Manhattans), via NASA EONET.

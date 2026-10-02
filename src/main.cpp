@@ -3848,6 +3848,7 @@ bool showSeasons(long nowEpoch) {
 // "  2026   9  30  2026.7452    425.81".
 #define CO2_URL         "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
 #define CO2_REFETCH_MS  43200000      // 12h -- it updates daily
+#define CO2_PREINDUSTRIAL 280.0f      // ppm, the usual pre-1750 baseline
 
 float g_co2 = -1;
 
@@ -3877,9 +3878,12 @@ bool showCo2(long) {
   showNoiseFrame(center8("**CO2**"), 1300);  // scrambles in...
   noiseMorph(g_frame, "        ", -1);         // ...and back out
   g_frame = "        ";
-  char frame[12];
+  char frame[40];
   snprintf(frame, sizeof(frame), "%.1fppm", g_co2);
   showFrame(frame, 1500);
+  snprintf(frame, sizeof(frame), "+%d%% over pre-industrial",
+           (int)roundf((g_co2 / CO2_PREINDUSTRIAL - 1) * 100));
+  showFadeFrame(frame, 1500);
   return true;
 }
 
@@ -4735,22 +4739,22 @@ const Feed FEEDS[] = {
   { 4,  "citibike",    showCitibike,   [] { return g_citibikeBikes >= 0; },       fetchCitibike,   CITIBIKE_REFETCH_MS },
   { 6,  "wx now",      showWxNow,      [] { return g_wxNow.valid; },              fetchWxNow,      WXNOW_REFETCH_MS },
   { 5,  "forecast",    showWxForecast, [] { return g_haveWxForecast; },           fetchWxForecast, WXFC_REFETCH_MS },
-  { 4,  "air",         showAir,        [] { return g_air.aqi >= 0; },             fetchAir,        0 },
-  { 4,  "uv",          showUv,         [] { return g_air.uv >= UV_SHOW_MIN; },    fetchAir,        0 },
+  { 2,  "air",         showAir,        [] { return g_air.aqi >= 0; },             fetchAir,        0 },
+  { 2,  "uv",          showUv,         [] { return g_air.uv >= UV_SHOW_MIN; },    fetchAir,        0 },
   { 6,  "airports",    showAirports,   hasAirportDelays,                          fetchAirports,   FAA_REFETCH_MS },
   { 6,  "sports",      showSports,     hasSports,                                 fetchSports,     0 },
-  { 5,  "news",        showNews,       [] { return g_newsCount > 0; },            fetchNews,       NEWS_REFETCH_MS },
-  { 6,  "sonos",       showSonos,      [] { return g_sonos.valid; },              fetchSonos,      SONOS_REFETCH_MS },
+  { 3,  "news",        showNews,       [] { return g_newsCount > 0; },            fetchNews,       NEWS_REFETCH_MS },
+  { 8,  "sonos",       showSonos,      [] { return g_sonos.valid; },              fetchSonos,      SONOS_REFETCH_MS },
   { 4,  "stocks",      showStocks,     [] { return g_spx.valid; },                fetchStocks,     QUOTE_REFETCH_MS },
   { 3,  "yen",         showYen,        [] { return g_yen.valid; },                fetchYen,        QUOTE_REFETCH_MS },
-  { 2,  "bitcoin",     showBitcoin,    [] { return g_btc.valid; },                fetchBitcoin,    QUOTE_REFETCH_MS },
+  { 1,  "bitcoin",     showBitcoin,    [] { return g_btc.valid; },                fetchBitcoin,    QUOTE_REFETCH_MS },
   { 3,  "tokyo",       showTokyo,      [] { return g_tokyo.valid; },              fetchTokyo,      TOKYO_WX_REFETCH_MS },
   { 2,  "jp holiday",  showJpHoliday,  [] { return g_jpHoliday.valid; },          fetchJpHoliday,  HOLIDAY_REFETCH_MS },
   { 2,  "holiday",     showHoliday,    [] { return g_holiday.valid; },            fetchHoliday,    HOLIDAY_REFETCH_MS },
   { 3,  "sun",         showSunTimes,   [] { return g_sun.valid; },                fetchSunTimes,   SUN_REFETCH_MS },
   { 2,  "daylight",    showDaylight,   [] { return g_dayLen[0] > 0 && g_dayLen[1] > 0; }, fetchDaylight, DAYLEN_REFETCH_MS },
   { 1,  "seasons",     showSeasons,    [] { return true; },                       nullptr,         0 },
-  { 2,  "moon",        showMoonPhase,  [] { return true; },                       nullptr,         0 },
+  { 3,  "moon",        showMoonPhase,  [] { return true; },                       nullptr,         0 },
   { 3,  "tide",        showTide,       [] { return g_tideCount > 0; },            fetchTide,       TIDE_REFETCH_MS },
   { 2,  "water",       showWater,      [] { return g_waterF > -100; },            fetchWater,      WATER_REFETCH_MS },
   { 6,  "iss",         showIss,        [] { return g_issOverhead; },              fetchIss,        ISS_REFETCH_MS },
@@ -4759,9 +4763,9 @@ const Feed FEEDS[] = {
   { 2,  "asteroid",    showAsteroid,   [] { return g_rock.valid; },               fetchAsteroid,   CAD_REFETCH_MS },
   { 1,  "iceberg",     showIceberg,    [] { return g_iceberg.valid; },            fetchIceberg,    EONET_REFETCH_MS },
   { 1,  "co2",         showCo2,        [] { return g_co2 > 0; },                  fetchCo2,        CO2_REFETCH_MS },
-  { 3,  "word",        showWord,       [] { return g_word.valid; },               fetchWord,       WOTD_REFETCH_MS },
+  { 1,  "word",        showWord,       [] { return g_word.valid; },               fetchWord,       WOTD_REFETCH_MS },
   { 2,  "horoscope",   showHoroscope,  hasHoroscope,                              fetchHoroscopes, HOROSCOPE_REFETCH_MS },
-  { 2,  "magic 8",     showMagic8,     [] { return true; },                       nullptr,         0 },
+  { 1,  "magic 8",     showMagic8,     [] { return true; },                       nullptr,         0 },
 };
 #define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
 
