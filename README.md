@@ -22,10 +22,10 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
 - **Display cycle**: every cycle shows any urgent alert (NWS, NYC OEM, Tokyo
   quake, emergency squawk, aurora), then the plane if there is one, then
-  `RANDOM_FEEDS_PER_CYCLE` (3) other feeds picked at random from those with
+  what the Sonos is playing, then `RANDOM_FEEDS_PER_CYCLE` (3) other feeds picked at random from those with
   something to show, weighted by the `weight` column of the `FEEDS` table in
-  `main.cpp`. Only those feeds (plus alerts and the plane) are fetched that
-  cycle.
+  `main.cpp`. Only those feeds (plus alerts, the plane and the Sonos) are
+  fetched that cycle.
 - **Emergency squawk**: a plane within 150 mi squawking 7500 (hijack), 7700
   (emergency) or 7600 (radio failure) — a blinking `SQK 7700`, then the
   callsign, type, distance, direction and altitude. Checked every 2 min.
@@ -127,8 +127,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [Nager.Date](https://date.nager.at/).
 - **News**: `NEWS` pulses in and out, then one of NPR's top 10 headlines, picked at
   random, scrolls across. Refreshed every 15 min.
-- **Sonos**: `PLAYING`, then artist and song (or NPR show and episode) when the
-  Living Room / Dining Room group is playing, read off the speakers over the LAN.
+- **Sonos**: `PLAYING`, then artist and song (or NPR show and episode), every
+  cycle while the Living Room / Dining Room group is playing. Read off the
+  speakers over the LAN.
 - **Stocks**: `STOCKS`, then the S&P 500 level, point change, percent change,
   and the level again. Blinks throughout on a move of 2% or more either way.
   `YEN` (yen per dollar, blinks at 1%) and `BITCOIN` (5%) work the same way.
@@ -316,7 +317,8 @@ More pictures coming
 1. Set the mode switch to **RUN** position (HIGH).
 2. The device connects to WiFi, syncs the clock over NTP, and starts fetching arrival data.
 3. Each cycle: any urgent alert (NWS, NYC OEM, Tokyo quake, squawk, aurora),
-   then the `*PLANE*` block if an airliner is on final into LGA, then three
+   then the `*PLANE*` block if an airliner is on final into LGA, then what's
+   playing on the Sonos, then three
    weighted-random feeds (trains, buses, weather, sports, ...) out of those
    with data.
 5. If WiFi fails, it displays "No Wi-fi" and restarts.
@@ -646,6 +648,11 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 7.9
+ - Oct 2, 2026
+ - Sonos shows every cycle while something's playing.
+ - New bus banner with wheels; `...` before the forecast.
+ - Word of the day in capitals, first sentence only; `&amp;` fixed in headlines.
  - version 7.8
  - Oct 2, 2026
  - Added a Sonos now-playing feed: Spotify, Sonos Radio, and NPR One episodes

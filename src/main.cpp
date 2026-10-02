@@ -300,15 +300,15 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 // raw instead of as ASCII.
 //   downtown -- a down arrowhead "\|/" in the top half   (H + J + K)
 //   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
-//   top bar  -- the crest of the tide banner's wave, over '-' and '_'
-// A character with its high bit set is that character plus the decimal point
-// in the same column -- see withDots().
+//   top bar  -- the crest of the tide banner's wave, over '-' and '_'; the bus roof
+//   wheel    -- the bus roof over a small 'o'
 #define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
 #define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
 #define GLYPH_TOP    ALPHANUM_SEG_A
 #define GLYPH_DOWN_CH '\x01'
 #define GLYPH_UP_CH   '\x02'
 #define GLYPH_TOP_CH  '\x03'
+#define GLYPH_WHEEL_CH '\x04'
 
 
 // Font lookup only -- never begun, so it never touches the bus. The library's
@@ -320,24 +320,9 @@ uint16_t glyphFor(char c) {
   if (c == GLYPH_DOWN_CH) return GLYPH_DOWN;
   if (c == GLYPH_UP_CH)   return GLYPH_UP;
   if (c == GLYPH_TOP_CH)  return GLYPH_TOP;
-  if ((uint8_t)c & 0x80)  return glyphFor(c & 0x7F) | ALPHANUM_SEG_DP;
+  if (c == GLYPH_WHEEL_CH) return glyphFor('o') | GLYPH_TOP;
   g_fontLookup.writeDigitAscii(0, c);
   return g_fontLookup.displaybuffer[0];
-}
-
-// Folds each '.' into the character before it, lit as that column's decimal
-// point, so "M5.2" takes 3 columns instead of 4.
-String withDots(const String &s) {
-  String out;
-  for (unsigned int i = 0; i < s.length(); i++) {
-    char c = s[i];
-    int last = (int)out.length() - 1;
-    if (c == '.' && last >= 0 && out[last] != ' ' && !((uint8_t)out[last] & 0x80))
-      out.setCharAt(last, out[last] | 0x80);
-    else
-      out += c;
-  }
-  return out;
 }
 
 // Raw segment bitmasks for all 8 columns -> both backpacks (columns 0-3 on
@@ -1421,14 +1406,15 @@ bool hasBuses() {
   return false;
 }
 
-// "[O O BUS O O]" rolls through, then for each stop with buses, run through the
+// A bus rolls through -- roof over a front wheel, BUS, roof over dual back
+// wheels -- then for each stop with buses, run through the
 // upcoming arrivals, each one its own frame carrying the route tag and the
 // countdown: "M14 12mn" / "M9 12min" / "M14 NOW". "min" is trimmed to "mn" when
 // the whole thing would overflow the 8 columns (M14 + two-digit minutes). SIRI
 // hands them back soonest-first already.
 bool showBuses(long nowEpoch) {
   if (!hasBuses()) return false;
-  scrollAcross("[O O BUS O O]");
+  scrollAcross("[\x03\x04\x03 BUS \x04\x03\x04\x03]");
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
 
@@ -1798,7 +1784,7 @@ void fetchWxForecast() {
 // treatment like the conditions text above.
 bool showWxForecast(long) {
   if (!g_haveWxForecast) return false;
-  scrollAcross("AND NOW FOR YOUR LOCAL FORECAST");
+  scrollAcross("...AND NOW FOR YOUR LOCAL FORECAST");
   for (int i = 0; i < WXFC_PERIODS; i++) {
     if (!g_wxForecast[i].name.length()) continue;
     showText(g_wxForecast[i].name, -1, 1800);
@@ -2246,7 +2232,7 @@ bool showTide(long nowEpoch) {
   showFrame(next->type == 'H' ? "High" : "Low", 1300);
   char frame[20];
   snprintf(frame, sizeof(frame), "%d-%02d%s %.1fft", h12, m, h < 12 ? "am" : "pm", next->ft);
-  showFadeFrame(withDots(frame), 2200);
+  showFadeFrame(frame, 2200);
   return true;
 }
 
@@ -2379,7 +2365,9 @@ int    g_newsCount = 0;
 // folded to plain ASCII. Anything else non-ASCII is dropped.
 String asciiFold(const String &in) {
   String s = in;
-  s.replace("&amp;", "&");
+  while (s.indexOf("&amp;") >= 0) s.replace("&amp;", "&");  // NPR sometimes escapes twice
+  s.replace("&#38;", "&");
+  s.replace("&#038;", "&");
   s.replace("&quot;", "\"");
   s.replace("&#39;", "'");
   s.replace("&#x27;", "'");
@@ -2537,10 +2525,10 @@ bool showQuote(const Quote &q) {
 
   if (big) blink(true);
   showFrame(center8(q.label), 1300);
-  showFrame(withDots(price),  1800);
-  showFrame(withDots(pts),    1500);
-  showFrame(withDots(pctTxt), 1500);
-  showFrame(withDots(price),  1500);
+  showFrame(price,  1800);
+  showFrame(pts,    1500);
+  showFrame(pctTxt, 1500);
+  showFrame(price,  1500);
   if (big) blink(false);
   return true;
 }
@@ -3656,7 +3644,7 @@ bool showAsteroid(long nowEpoch) {
   showFadeFrame(frame, 1500);
   if (g_rock.mi < 1000000.0f) snprintf(frame, sizeof(frame), "%dK mi", (int)(g_rock.mi / 1000.0f));
   else                        snprintf(frame, sizeof(frame), "%.1fM mi", g_rock.mi / 1000000.0f);
-  showFrame(withDots(frame), 1500);
+  showFrame(frame, 1500);
   showFrame(daysAwayText(g_rock.epoch, nowEpoch), 1500);
   return true;
 }
@@ -3898,7 +3886,7 @@ bool showCo2(long) {
   g_frame = "        ";
   char frame[40];
   snprintf(frame, sizeof(frame), "%.1fppm", g_co2);
-  showFrame(withDots(frame), 1500);
+  showFrame(frame, 1500);
   snprintf(frame, sizeof(frame), "+%d%% over pre-industrial",
            (int)roundf((g_co2 / CO2_PREINDUSTRIAL - 1) * 100));
   showFadeFrame(frame, 1500);
@@ -4236,7 +4224,7 @@ bool showSports(long nowEpoch) {
 // URL: a newscast just says so, and a podcast episode is looked up in NPR's
 // feed for the show (the URL's `p=`) by its episode ID (`awEpisodeId=`).
 const char *const SONOS_ROOMS[] = { "Living Room", "Dining Room" };
-#define SONOS_REFETCH_MS   15000      // fresh whenever it's picked -- a cycle runs longer than this
+#define SONOS_REFETCH_MS   15000      // shorter than a cycle, so fresh every cycle
 #define SONOS_FIND_MS      300000     // with no speaker known, search again this often
 #define SONOS_SSDP_PORT    51900      // our end of the SSDP search
 #define NPR_FEED_URL_BASE  "https://feeds.npr.org/"
@@ -4695,7 +4683,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.8");
+  showText(" V 7.9");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -4763,7 +4751,6 @@ const Feed FEEDS[] = {
   { 6,  "airports",    showAirports,   hasAirportDelays,                          fetchAirports,   FAA_REFETCH_MS },
   { 6,  "sports",      showSports,     hasSports,                                 fetchSports,     0 },
   { 3,  "news",        showNews,       [] { return g_newsCount > 0; },            fetchNews,       NEWS_REFETCH_MS },
-  { 8,  "sonos",       showSonos,      [] { return g_sonos.valid; },              fetchSonos,      SONOS_REFETCH_MS },
   { 4,  "stocks",      showStocks,     [] { return g_spx.valid; },                fetchStocks,     QUOTE_REFETCH_MS },
   { 3,  "yen",         showYen,        [] { return g_yen.valid; },                fetchYen,        QUOTE_REFETCH_MS },
   { 1,  "bitcoin",     showBitcoin,    [] { return g_btc.valid; },                fetchBitcoin,    QUOTE_REFETCH_MS },
@@ -4859,14 +4846,14 @@ void loop() {
 
       // The plan, each pass:
       // - pick this cycle's random feeds (see pickFeeds())
-      // - fetch only what's about to be shown -- alerts, the plane, and those
+      // - fetch only what's about to be shown -- alerts, the plane, the Sonos and those
       //   picks -- each still gated by its own refetch interval
       // - draw everything from the caches
 
       progReset();  // start a fresh loading clock for whatever fetches fire below
 
-      // Alerts and the plane show every cycle, so they always fetch (each on
-      // its own clock); the random feeds fetch only when picked below.
+      // Alerts, the plane and the Sonos show every cycle, so they always fetch
+      // (each on its own clock); the random feeds fetch only when picked below.
       // --- NWS: refresh the weather alert on its own (slow) clock ---------
       static RefetchTimer wxTimer;
       if (wxTimer.due(WX_REFETCH_MS)) fetchWeatherAlert();
@@ -4886,6 +4873,10 @@ void loop() {
       // --- SWPC: geomagnetic storm strong enough for an aurora here -------
       static RefetchTimer kpTimer;
       if (kpTimer.due(KP_REFETCH_MS)) fetchKp();
+
+      // --- Sonos: what's playing, over the LAN ----------------------------
+      static RefetchTimer sonosTimer;
+      if (sonosTimer.due(SONOS_REFETCH_MS)) fetchSonos();
 
       // --- ADS-B: refresh the plane cache on its own (faster) clock ---------
       // Same decoupled pattern as the trains: poll here, draw from the cache.
@@ -4959,7 +4950,7 @@ void loop() {
       if (g_quakeLine.length()) {
         setBrightnessBoth(BRIGHT_FULL);
         shakeText(g_quakeTag);
-        showFadeFrame(withDots(g_quakeLine), 2500);
+        showFadeFrame(g_quakeLine, 2500);
       }
 
       // ...a plane near NYC squawking 7500/7700/7600...
@@ -4969,11 +4960,14 @@ void loop() {
       if (g_kp >= AURORA_KP) {
         char line[64];
         snprintf(line, sizeof(line), "Kp %.1f - northern lights possible, look north", g_kp);
-        showAlert(center8("AURORA").c_str(), withDots(line));
+        showAlert(center8("AURORA").c_str(), line);
       }
 
       // ...then the plane on final, if there is one...
       if (g_plane.valid) showPlane(g_plane);
+
+      // ...then what the Sonos is playing, if anything...
+      showSonos(nowEpoch);
 
       // ...then the random feeds picked above.
       for (int i = 0; i < numPicks; i++) FEEDS[picks[i]].show(nowEpoch);
