@@ -4512,6 +4512,72 @@ bool showSonos(long) {
 }
 
 
+//  ____       _   _                          _
+// |  _ \ ___| |_(_)_ __ ___ _ __ ___   ___ _ __ | |_
+// | |_) / _ \ __| | '__/ _ \ '_ ` _ \ / _ \ '_ \| __|
+// |  _ <  __/ |_| | | |  __/ | | | | |  __/ | | | |_
+// |_| \_\___|\__|_|_|  \___|_| |_| |_|\___|_| |_|\__|
+//
+// Michele's last shifts at MyEyeDoctor (2026). Retirement starts the day
+// after the last one.
+const uint8_t RETIRE_WORK_DAYS[][2] = {  // {month, day}
+  {10, 6}, {10, 8}, {10, 9}, {10, 16}, {10, 22}, {10, 23}, {10, 24}, {10, 27},
+  {10, 29}, {10, 30}, {11, 3}, {11, 5}, {11, 6}, {11, 7}, {11, 10}, {11, 19},
+  {11, 20}, {11, 21}, {11, 24},
+};
+#define RETIRE_YEAR 2026
+#define NUM_RETIRE_WORK_DAYS (sizeof(RETIRE_WORK_DAYS) / sizeof(RETIRE_WORK_DAYS[0]))
+
+const char *const RETIRE_BANNERS[] = {
+  "DAYS UNTIL RETIREMENT", "MICHELE COUNTDOWN CLOCK", "DAYS TILL FREEDOM",
+  "DAYS REMAINING", "F ALL YALL", "I WANT YOU TO HAVE THIS STAPLER",
+};
+
+// A random banner scrolls through, CAL (calendar days to retirement) fades in,
+// WORK (shifts left, today's included) slides in after it, then fades out.
+// Down to the last shift, just a blinking ONE MORE DAY; after it, RETIRED!
+// for the rest of the year.
+bool showRetirement(long nowEpoch) {
+  time_t t = (time_t)nowEpoch;
+  struct tm tmNow;
+  localtime_r(&t, &tmNow);
+  long today = daysFromCivil(tmNow.tm_year + 1900, tmNow.tm_mon + 1, tmNow.tm_mday);
+
+  int work = 0;
+  for (size_t i = 0; i < NUM_RETIRE_WORK_DAYS; i++) {
+    if (daysFromCivil(RETIRE_YEAR, RETIRE_WORK_DAYS[i][0], RETIRE_WORK_DAYS[i][1]) >= today) work++;
+  }
+  if (work == 0) {
+    if (tmNow.tm_year + 1900 != RETIRE_YEAR) return false;
+    fadeInOut("RETIRED!", 2000);
+    return true;
+  }
+  if (work == 1) {
+    blink(true);
+    scrollAcross("ONE MORE DAY");
+    blink(false);
+    return true;
+  }
+  const uint8_t *last = RETIRE_WORK_DAYS[NUM_RETIRE_WORK_DAYS - 1];
+  long cal = daysFromCivil(RETIRE_YEAR, last[0], last[1]) + 1 - today;
+
+  scrollAcross(RETIRE_BANNERS[random(sizeof(RETIRE_BANNERS) / sizeof(RETIRE_BANNERS[0]))]);
+
+  String calText = center8("CAL -" + String(cal));
+  fadeBrightnessBoth(0, 8);
+  writeRawFrame(calText, -1);
+  g_frame = calText;
+  fadeBrightnessBoth(BRIGHT_FULL, 40);
+  delay(1500);
+
+  showFrame(center8("WORK -" + String(work)), 2000);
+  fadeBrightnessBoth(0, 40);
+  g_frame = "        ";
+  writeRawFrame(g_frame, -1);
+  return true;
+}
+
+
 // __        ___ _____ _   ___         ____             __ _
 // \ \      / (_)  ___(_) / _ \ ___   / ___|___  _ __  / _(_) __ _
 //  \ \ /\ / /| | |_  | | | | / __| | |   / _ \| '_ \| |_| |/ _` |
@@ -4683,7 +4749,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 7.9");
+  showText(" V 8.0");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
@@ -4915,8 +4981,11 @@ void loop() {
         nowEpoch = g_trainFetchEpoch + (long)((millis() - g_lastTrainFetchMs) / 1000);
       }
 
-      // Every cycle: urgent alerts first (NWS, NYC OEM, Tokyo quake, squawks,
-      // aurora) if present...
+      // Every cycle: Michele's retirement countdown, ahead of everything...
+      showRetirement(nowEpoch);
+
+      // ...then urgent alerts (NWS, NYC OEM, Tokyo quake, squawks, aurora) if
+      // present...
 
       // weather alert, source tag then just the title. Header is centered
       // ("-=NWS=-") rather than left-justified like the other source tags.

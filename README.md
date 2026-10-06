@@ -20,7 +20,10 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   up arrowhead (`/|\`) in the bottom half for uptown. So `Fv  2min`, `F^  3min`,
   `Fv  6min`, ... (`F<dir>  NOW` when one's basically here, `NO F TRN` when
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
-- **Display cycle**: every cycle shows any urgent alert (NWS, NYC OEM, Tokyo
+- **Retirement countdown**: first every cycle, a random banner, then calendar
+  days (`CAL -50`) and shifts (`WORK -19`) left until Michele retires;
+  `ONE MORE DAY` before the last shift, `RETIRED!` after it through New Year's.
+- **Display cycle**: every cycle shows the retirement countdown, then any urgent alert (NWS, NYC OEM, Tokyo
   quake, emergency squawk, aurora), then the plane if there is one, then
   what the Sonos is playing, then `RANDOM_FEEDS_PER_CYCLE` (3) other feeds picked at random from those with
   something to show, weighted by the `weight` column of the `FEEDS` table in
@@ -648,6 +651,9 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.0
+ - Oct 6, 2026
+ - Michele's retirement countdown, first every cycle, then `RETIRED!` through Dec 31.
  - version 7.9
  - Oct 2, 2026
  - Sonos shows every cycle while something's playing.
