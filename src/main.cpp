@@ -4530,11 +4530,14 @@ const uint8_t RETIRE_WORK_DAYS[][2] = {  // {month, day}
 
 const char *const RETIRE_BANNERS[] = {
   "DAYS UNTIL RETIREMENT", "MICHELE COUNTDOWN CLOCK", "DAYS TILL FREEDOM",
-  "DAYS REMAINING", "F ALL YALL", "I WANT YOU TO HAVE THIS STAPLER",
+  "DAYS REMAINING", "FUCK ALL YALL", "I WANT YOU TO HAVE THIS STAPLER",
+  "WE DO WHAT WE WANT", "WALKS TO INFRASTRUCTURE", "NO MORE WORK", "PEACE OUT",
 };
 
-// A random banner scrolls through, CAL (calendar days to retirement) fades in,
-// WORK (shifts left, today's included) slides in after it, then fades out.
+// RETIRED scrambles in, shakes like the quake tag and pulses like NEWS; WORK
+// (shifts left, today's included) pushes it out as "18 DAYS", a random banner
+// rides through, then the days and RETIRED push back in and RETIRED pulses
+// again and scrambles away.
 // Down to the last shift, just a blinking ONE MORE DAY; after it, RETIRED!
 // for the rest of the year.
 bool showRetirement(long nowEpoch) {
@@ -4558,22 +4561,28 @@ bool showRetirement(long nowEpoch) {
     blink(false);
     return true;
   }
-  const uint8_t *last = RETIRE_WORK_DAYS[NUM_RETIRE_WORK_DAYS - 1];
-  long cal = daysFromCivil(RETIRE_YEAR, last[0], last[1]) + 1 - today;
+  String retired = center8("RETIRED");
+  String days = center8(String(work) + " DAYS");
 
+  fadeBrightnessBoth(BRIGHT_FULL, 8);
+  noiseMorph(g_frame, retired, -1, 24, 40);
+  g_frame = retired;
+  auto pulse = []() {  // like NEWS, but ends at full
+    for (int i = 0; i < 2; i++) {
+      fadeBrightnessBoth(0, 30);
+      fadeBrightnessBoth(BRIGHT_FULL, 30);
+    }
+  };
+
+  shakeText("RETIRED", 0);
+  pulse();
+  showFrame(days, 1500);
   scrollAcross(RETIRE_BANNERS[random(sizeof(RETIRE_BANNERS) / sizeof(RETIRE_BANNERS[0]))]);
-
-  String calText = center8("CAL -" + String(cal));
-  fadeBrightnessBoth(0, 8);
-  writeRawFrame(calText, -1);
-  g_frame = calText;
-  fadeBrightnessBoth(BRIGHT_FULL, 40);
-  delay(1500);
-
-  showFrame(center8("WORK -" + String(work)), 2000);
-  fadeBrightnessBoth(0, 40);
+  showFrame(days, 1500);
+  showFrame(retired, 0);
+  pulse();
   g_frame = "        ";
-  writeRawFrame(g_frame, -1);
+  noiseMorph(retired, g_frame, -1, 24, 40);
   return true;
 }
 
@@ -4749,7 +4758,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.0");
+  showText(" V 8.1");
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);

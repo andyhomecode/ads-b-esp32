@@ -20,8 +20,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   up arrowhead (`/|\`) in the bottom half for uptown. So `Fv  2min`, `F^  3min`,
   `Fv  6min`, ... (`F<dir>  NOW` when one's basically here, `NO F TRN` when
   nothing's running). Up to `NUM_TRAINS` per direction go into the merge.
-- **Retirement countdown**: first every cycle, a random banner, then calendar
-  days (`CAL -50`) and shifts (`WORK -19`) left until Michele retires;
+- **Retirement countdown**: first every cycle, `RETIRED` scrambles in and
+  shakes, then shifts left until Michele retires (`18 DAYS`) around a random banner;
   `ONE MORE DAY` before the last shift, `RETIRED!` after it through New Year's.
 - **Display cycle**: every cycle shows the retirement countdown, then any urgent alert (NWS, NYC OEM, Tokyo
   quake, emergency squawk, aurora), then the plane if there is one, then
@@ -651,6 +651,9 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.1
+ - Oct 7, 2026
+ - Retirement countdown much louder: `RETIRED` scrambles, shakes and pulses; shifts only; new phrases.
  - version 8.0
  - Oct 6, 2026
  - Michele's retirement countdown, first every cycle, then `RETIRED!` through Dec 31.
