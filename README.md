@@ -101,7 +101,7 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   out there" ping like the Tokyo quake, not a warning; NWS and NYC OEM already
   cover "it's about to hit you" once NHC issues an actual watch/warning.
   Checked every 30 min. Nothing shown when no Atlantic system is active.
-- **Current conditions + short forecast**: a `WX Now` header, then temp
+- **Current conditions + short forecast**: a `Weather` header, then temp
   (`Temp 72F`), feels-like (`Feel 70F`, only shown when it actually differs),
   and dew point (`Dew 61F`) as short frames, then the conditions and the next
   two forecast periods (NWS's own period names, e.g. `Tonight`) as scrolling
@@ -163,8 +163,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 - **Fade + scroll transitions**: each frame dims, slides the old data out and
   the new data in, then fades back up — applies to every data field, not just
   fixed-width ones; longer content (alert text, WX conditions/forecast, the
-  quake line, horoscope) marquees across after its fade-in. Header tags snap
-  in without a fade.
+  quake line, horoscope) marquees across after its fade-in. Headers land
+  through a random scramble, shutter, wipe, ripple, piston or segment morph;
+  full-width ones then get an arrow shot through them.
 - **Decoupled fetch**: each source (trains ~30s, adsb.lol ~20s, buses ~30s,
   weather ~5min, NYC OEM ~5min, Citi Bike ~30s, ISS ~20s, NHC ~30min) polls on
   its own clock and the display loops off the caches between fetches. A
@@ -651,6 +652,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.2
+ - Oct 19, 2026
+ - Headers land through random transitions (shutter, wipe, ripple, pistons, morph); full-width ones get an arrow highlight. `__AIR__` scrambles; `WX Now` is `Weather`.
+ - Missing Oct 20 shift; scramble-outs thin out before going dark; gap ahead of the bus banner.
  - version 8.1
  - Oct 7, 2026
  - Retirement countdown much louder: `RETIRED` scrambles, shakes and pulses; shifts only; new phrases.

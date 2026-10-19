@@ -638,15 +638,18 @@ uint16_t randomSegs(float density) {
 // Segment static from one frame to another, across all 8 columns: the old
 // glyph's segments drop out and the new one's lock in at random, with noise
 // peaking halfway, then it settles exactly on `to`. The decimal point on
-// dotCol (-1 = none) stays lit throughout.
+// dotCol (-1 = none) stays lit throughout. Scrambling out to blank, the
+// static thins for another ~250ms down to a stray segment or two first.
 void noiseMorph(const String &from, const String &to, int dotCol,
                 int steps = 12, int stepMs = 35) {
   uint16_t a[8], b[8], segs[8];
+  bool toBlank = true;
   for (int i = 0; i < 8; i++) {
     a[i] = glyphFor(i < (int)from.length() ? from.charAt(i) : ' ');
     b[i] = glyphFor(i < (int)to.length()   ? to.charAt(i)   : ' ');
+    if (b[i]) toBlank = false;
   }
-  for (int s = 1; s <= steps; s++) {
+  for (int s = 1; s <= (toBlank ? steps - 1 : steps); s++) {
     float p = (float)s / steps;  // 0 -> 1: how far toward `to`
     for (int i = 0; i < 8; i++) {
       segs[i] = (a[i] & randomSegs(1 - p)) | (b[i] & randomSegs(p)) |
@@ -656,6 +659,252 @@ void noiseMorph(const String &from, const String &to, int dotCol,
     writeSegs(segs);
     delay(stepMs);
   }
+  if (!toBlank) return;
+  int tail = 250 / stepMs;
+  float density = 0.12f, decay = powf(0.012f / density, 1.0f / tail);
+  for (int s = 0; s < tail; s++) {
+    density *= decay;
+    for (int i = 0; i < 8; i++)
+      segs[i] = randomSegs(density) | (i == dotCol ? ALPHANUM_SEG_DP : 0);
+    writeSegs(segs);
+    delay(stepMs);
+  }
+  for (int i = 0; i < 8; i++) segs[i] = (i == dotCol ? ALPHANUM_SEG_DP : 0);
+  writeSegs(segs);
+}
+
+// The 14 segments (plus the decimal point) by where they sit in a column, for
+// the transitions below that sweep a line across the glyphs. Rows run bottom
+// to top, slices left to right.
+const uint16_t SEG_ROWS[5] = {
+  ALPHANUM_SEG_D | ALPHANUM_SEG_DP,
+  ALPHANUM_SEG_E | ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L | ALPHANUM_SEG_C,
+  ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2,
+  ALPHANUM_SEG_F | ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K | ALPHANUM_SEG_B,
+  ALPHANUM_SEG_A,
+};
+const uint16_t SEG_SLICES[5] = {
+  ALPHANUM_SEG_F | ALPHANUM_SEG_E,
+  ALPHANUM_SEG_H | ALPHANUM_SEG_N | ALPHANUM_SEG_G1,
+  ALPHANUM_SEG_A | ALPHANUM_SEG_D | ALPHANUM_SEG_J | ALPHANUM_SEG_M,
+  ALPHANUM_SEG_K | ALPHANUM_SEG_L | ALPHANUM_SEG_G2,
+  ALPHANUM_SEG_B | ALPHANUM_SEG_C | ALPHANUM_SEG_DP,
+};
+#define SEG_ALL     0x7FFF
+#define SEG_OUTLINE (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | \
+                     ALPHANUM_SEG_D | ALPHANUM_SEG_E | ALPHANUM_SEG_F)
+
+void glyphsOf(const String &s, uint16_t g[8]) {
+  for (int i = 0; i < 8; i++) g[i] = glyphFor(i < (int)s.length() ? s.charAt(i) : ' ');
+}
+
+// A shutter rises over `from` a row at a time until every segment is lit,
+// then rolls back down, uncovering `to` from the top. up=false drops it from
+// the top bar instead and rolls it back up.
+void shutterMorph(const String &from, const String &to, bool up, int stepMs = 40) {
+  uint16_t a[8], b[8], segs[8];
+  glyphsOf(from, a);
+  glyphsOf(to, b);
+  for (int k = 1; k <= 10; k++) {
+    int covered = k <= 5 ? k : 10 - k;
+    uint16_t cover = 0;
+    for (int r = 0; r < covered; r++) cover |= SEG_ROWS[up ? r : 4 - r];
+    for (int i = 0; i < 8; i++) segs[i] = cover | ((k <= 5 ? a[i] : b[i]) & ~cover);
+    writeSegs(segs);
+    delay(k == 5 ? stepMs * 3 : stepMs);
+  }
+}
+
+// Pistons: in each column a lit row rises from the bottom bar to the top,
+// over `from` and with `to` coming up beneath it. Each column's piston starts
+// at startStep[i] (in steps), so they ripple across.
+void pistonMorph(const String &from, const String &to, const int startStep[8],
+                 int stepMs = 30) {
+  uint16_t a[8], b[8], segs[8];
+  glyphsOf(from, a);
+  glyphsOf(to, b);
+  int last = 0;
+  for (int i = 0; i < 8; i++) last = max(last, startStep[i]);
+  for (int s = 0; s <= last + 5; s++) {
+    for (int i = 0; i < 8; i++) {
+      int row = s - startStep[i];  // where this column's piston is
+      if (row < 0)       segs[i] = a[i];
+      else if (row >= 5) segs[i] = b[i];
+      else {
+        segs[i] = SEG_ROWS[row];
+        for (int r = 0; r < 5; r++)
+          if (r != row) segs[i] |= (r < row ? b[i] : a[i]) & SEG_ROWS[r];
+      }
+    }
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+// order: 0 left to right, 1 right to left, 2 random. One starts every 3
+// steps, while the one before is still rising.
+void pistons(const String &from, const String &to, int order) {
+  int start[8];
+  for (int i = 0; i < 8; i++) start[i] = 3 * (order == 1 ? 7 - i : i);
+  if (order == 2) {
+    for (int i = 7; i > 0; i--) {
+      int j = random(i + 1), t = start[i];
+      start[i] = start[j];
+      start[j] = t;
+    }
+  }
+  pistonMorph(from, to, start);
+}
+
+// A bar two slices wide sweeps across, `to` behind it and `from` still ahead.
+void wipeMorph(const String &from, const String &to, bool leftToRight, int stepMs = 12) {
+  uint16_t a[8], b[8], segs[8];
+  glyphsOf(from, a);
+  glyphsOf(to, b);
+  const int n = 8 * 5;
+  for (int e = 1; e <= n + 2; e++) {  // slices swept so far
+    for (int i = 0; i < 8; i++) {
+      segs[i] = 0;
+      for (int sl = 0; sl < 5; sl++) {
+        int p = i * 5 + sl;
+        if (!leftToRight) p = n - 1 - p;
+        segs[i] |= (p < e - 2 ? b[i] : p < e ? SEG_ALL : a[i]) & SEG_SLICES[sl];
+      }
+    }
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+// An arrow shoots through `text` a column at a time along the middle bar,
+// its shaft trailing over the three columns it just passed. It inverts what
+// it crosses -- a lit segment goes dark under it -- so it shows over anything.
+void arrowHighlight(const String &text, bool leftToRight, int stepMs = 55) {
+  uint16_t head = leftToRight ? (ALPHANUM_SEG_G1 | ALPHANUM_SEG_H | ALPHANUM_SEG_N)   // -> tip at center
+                              : (ALPHANUM_SEG_G2 | ALPHANUM_SEG_K | ALPHANUM_SEG_L);  // <-
+  uint16_t a[8], segs[8];
+  glyphsOf(text, a);
+  for (int h = 0; h <= 8 + 3; h++) {  // head's column, counted from where it enters
+    for (int i = 0; i < 8; i++) {
+      int c = leftToRight ? i : 7 - i;
+      segs[i] = a[i];
+      if (c == h) segs[i] ^= head;
+      else if (c < h && c >= h - 3) segs[i] ^= ALPHANUM_SEG_G1 | ALPHANUM_SEG_G2;
+    }
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+// Every segment that differs between the two frames flips to `to`, one at a
+// time in random order across the whole display, over about totalMs.
+void segmentMorph(const String &from, const String &to, int totalMs = 1800) {
+  uint16_t segs[8], b[8];
+  glyphsOf(from, segs);
+  glyphsOf(to, b);
+  uint8_t diff[8 * 15];  // column * 15 + bit
+  int n = 0;
+  for (int i = 0; i < 8; i++)
+    for (int bit = 0; bit < 15; bit++)
+      if ((segs[i] ^ b[i]) & (1 << bit)) diff[n++] = i * 15 + bit;
+  for (int k = n - 1; k > 0; k--) {
+    int j = random(k + 1);
+    uint8_t t = diff[k];
+    diff[k] = diff[j];
+    diff[j] = t;
+  }
+  int stepMs = n ? constrain(totalMs / n, 20, 80) : 0;
+  for (int k = 0; k < n; k++) {
+    segs[diff[k] / 15] ^= 1 << (diff[k] % 15);
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+// A flash ripples out from the middle two columns: each column lights fully,
+// drops to its outline box, then lands on `to`.
+void rippleMorph(const String &from, const String &to, int stepMs = 60) {
+  uint16_t a[8], b[8], segs[8];
+  glyphsOf(from, a);
+  glyphsOf(to, b);
+  for (int t = 0; t <= 5; t++) {
+    for (int i = 0; i < 8; i++) {
+      int d = i < 4 ? 3 - i : i - 4;  // 0 for the middle pair
+      segs[i] = d > t ? a[i] : d == t ? SEG_ALL : d == t - 1 ? SEG_OUTLINE : b[i];
+    }
+    writeSegs(segs);
+    delay(stepMs);
+  }
+}
+
+struct Transition {
+  const char *name;
+  void (*run)(const String &from, const String &to);
+};
+const Transition TRANSITIONS[] = {
+  {"SCRAMBLE", [](const String &f, const String &t) { noiseMorph(f, t, -1); }},
+  {"SHUT UP",  [](const String &f, const String &t) { shutterMorph(f, t, true); }},
+  {"SHUT DN",  [](const String &f, const String &t) { shutterMorph(f, t, false); }},
+  {"WIPE >",   [](const String &f, const String &t) { wipeMorph(f, t, true); }},
+  {"WIPE <",   [](const String &f, const String &t) { wipeMorph(f, t, false); }},
+  {"RIPPLE",   [](const String &f, const String &t) { rippleMorph(f, t); }},
+  {"PISTON >", [](const String &f, const String &t) { pistons(f, t, 0); }},
+  {"PISTON <", [](const String &f, const String &t) { pistons(f, t, 1); }},
+  {"PISTON ?", [](const String &f, const String &t) { pistons(f, t, 2); }},
+  {"MORPH",    [](const String &f, const String &t) { segmentMorph(f, t); }},
+};
+#define NUM_TRANSITIONS (sizeof(TRANSITIONS) / sizeof(TRANSITIONS[0]))
+
+// Effects over a frame that's already showing, like the quake shake.
+struct Highlight {
+  const char *name;
+  void (*run)(const String &text);
+};
+const Highlight HIGHLIGHTS[] = {
+  {"ARROW >", [](const String &t) { arrowHighlight(t, true); }},
+  {"ARROW <", [](const String &t) { arrowHighlight(t, false); }},
+};
+#define NUM_HIGHLIGHTS (sizeof(HIGHLIGHTS) / sizeof(HIGHLIGHTS[0]))
+
+// A header lands on the display through a random one of the transitions
+// above, at full brightness, and holds. One that fills all 8 columns, with no
+// room to dress it up, gets a random highlight once it's there.
+void showHeader(const String &text, int holdMs = 1300) {
+  String next = text.substring(0, 8);
+  while (next.length() < 8) next += " ";
+  fadeBrightnessBoth(BRIGHT_FULL, 8);
+  TRANSITIONS[random(NUM_TRANSITIONS)].run(g_frame, next);
+  g_frame = next;
+  if (next[0] != ' ' && next[7] != ' ') {
+    delay(300);
+    HIGHLIGHTS[random(NUM_HIGHLIGHTS)].run(next);
+  }
+  delay(holdMs);
+}
+
+// Boot-time demo: each transition's name, then that transition into a sample
+// header; then each highlight's name, cut to a full-width header, and that
+// highlight over it. Set to 0 once they're picked.
+#define DEMO_TRANSITIONS 0
+
+void demoTransitions() {
+  fadeBrightnessBoth(BRIGHT_FULL, 8);
+  for (size_t i = 0; i < NUM_TRANSITIONS; i++) {
+    String name = center8(TRANSITIONS[i].name);
+    writeRawFrame(name, -1);
+    delay(1200);
+    TRANSITIONS[i].run(name, "Weather ");
+    delay(1200);
+  }
+  for (size_t i = 0; i < NUM_HIGHLIGHTS; i++) {
+    writeRawFrame(center8(HIGHLIGHTS[i].name), -1);
+    delay(1200);
+    writeRawFrame("ISS OVER", -1);
+    delay(500);
+    HIGHLIGHTS[i].run("ISS OVER");
+    delay(1200);
+  }
+  g_frame = "ISS OVER";
 }
 
 // Like showFadeFrame(), but the first 8 columns scramble in through segment
@@ -1414,7 +1663,7 @@ bool hasBuses() {
 // hands them back soonest-first already.
 bool showBuses(long nowEpoch) {
   if (!hasBuses()) return false;
-  scrollAcross("[\x03\x04\x03 BUS \x04\x03\x04\x03]");
+  scrollAcross("  [\x03\x04\x03 BUS \x04\x03\x04\x03]");
   for (size_t fi = 0; fi < NUM_BUS_FEEDS; fi++) {
     if (g_busCount[fi] == 0) continue;
 
@@ -1542,7 +1791,7 @@ void fetchCitibike() {
 // dock count.
 bool showCitibike(long) {
   if (g_citibikeBikes < 0) return false;  // no reading yet
-  showFrame("CitiBike", 1300);
+  showHeader("CitiBike");
   char frame[16];
   snprintf(frame, sizeof(frame), "%ld bikes", g_citibikeBikes);
   showFrame(frame, 1300);
@@ -1705,7 +1954,7 @@ void fetchWxNow() {
 bool showWxNow(long) {
   if (!g_wxNow.valid) return false;
 
-  showFrame("WX Now", 1300);
+  showHeader("Weather");
 
   char frame[16];
   snprintf(frame, sizeof(frame), "Temp %dF", (int)roundf(g_wxNow.tempF));
@@ -1876,7 +2125,7 @@ bool showHoroscope(long) {
   if (numValid == 0) return false;
 
   Horoscope &h = g_horoscopes[valid[random(numValid)]];
-  showFrame(h.label, 1300);
+  showHeader(h.label);
   showFadeFrame(h.text, 2500);
   return true;
 }
@@ -2333,7 +2582,7 @@ bool showHolidayFrom(const Holiday &h, const char *header, long nowEpoch) {
   long daysAway = h.civilDay - today;
   if (daysAway < 0) daysAway = 0;  // stale cache from just after it passed; next fetch refills
 
-  showFrame(header, 1300);
+  showHeader(header);
   showFadeFrame(h.name, 2000);
   char frame[10];
   snprintf(frame, sizeof(frame), "%ldd", daysAway);
@@ -2524,7 +2773,7 @@ bool showQuote(const Quote &q) {
   snprintf(pctTxt, sizeof(pctTxt), "%+.2f%%", pct);
 
   if (big) blink(true);
-  showFrame(center8(q.label), 1300);
+  showHeader(center8(q.label));
   showFrame(price,  1800);
   showFrame(pts,    1500);
   showFrame(pctTxt, 1500);
@@ -2923,7 +3172,7 @@ void fetchIss() {
 // One frame, same as a bus arrival -- shown only while it's actually overhead.
 bool showIss(long) {
   if (!g_issOverhead) return false;
-  showFrame("ISS OVER", 1300);
+  showHeader("ISS OVER");
   return true;
 }
 
@@ -3042,7 +3291,7 @@ void fetchHurricane() {
 bool showHurricane(long) {
   if (!g_hurricane.valid) return false;
 
-  showFrame("NOAA NHC", 1300);  // header frame, same idea as "E B'WAY" for trains
+  showHeader("NOAA NHC");
   showFrame(g_hurricane.name, 1300);  // natural case; truncated to 8 cols if it runs long
 
   char frame[16];
@@ -3150,7 +3399,7 @@ bool showIceberg(long) {
   if (!g_iceberg.valid) return false;
 
   char frame[20];
-  showFrame("Iceberg", 1300);
+  showHeader("Iceberg");
   showFrame(g_iceberg.name, 1300);  // "A81"
   float sqmi = g_iceberg.sqnm * 1.32432f;
   snprintf(frame, sizeof(frame), "%d sqmi", (int)sqmi);
@@ -3287,7 +3536,7 @@ bool hasAirportDelays() {
 // DELAYS, then one scrolling line per affected airport.
 bool showAirports(long) {
   if (!hasAirportDelays()) return false;
-  showFrame(center8("DELAYS"), 1300);
+  showHeader(center8("DELAYS"));
   for (size_t i = 0; i < NUM_FAA_AIRPORTS; i++)
     if (g_airportDelay[i].length()) showFadeFrame(g_airportDelay[i], 2000);
   return true;
@@ -3387,7 +3636,7 @@ void fetchWater() {
 
 bool showWater(long) {
   if (g_waterF < -100) return false;
-  showFrame("Water", 1300);
+  showHeader("Water");
   char frame[12];
   snprintf(frame, sizeof(frame), "%dF", (int)roundf(g_waterF));
   showFrame(frame, 1500);
@@ -3454,7 +3703,7 @@ void fetchTokyo() {
 // Tokyo, the time there, the temperature in both units, then the sky.
 bool showTokyo(long nowEpoch) {
   if (!g_tokyo.valid) return false;
-  showFrame("Tokyo", 1300);
+  showHeader("Tokyo");
 
   char frame[16];
   if (nowEpoch > 1700000000L) {
@@ -3539,7 +3788,9 @@ bool showAir(long) {
   if (g_air.aqi < 0) return false;
   bool bad = g_air.aqi >= AQI_BLINK;
   if (bad) blink(true);
-  showFrame("Air", 1300);
+  showNoiseFrame(center8("__AIR__"), 1300);  // scrambles in...
+  noiseMorph(g_frame, "        ", -1);         // ...and back out
+  g_frame = "        ";
   char frame[12];
   snprintf(frame, sizeof(frame), "AQI %d", g_air.aqi);
   showFrame(frame, 1500);
@@ -3638,7 +3889,7 @@ String daysAwayText(long epoch, long nowEpoch) {
 bool showAsteroid(long nowEpoch) {
   if (!g_rock.valid) return false;
   char frame[16];
-  showFrame("Asteroid", 1300);
+  showHeader("Asteroid");
   showFadeFrame(g_rock.name, 1500);
   snprintf(frame, sizeof(frame), "%dm wide", g_rock.sizeM);
   showFadeFrame(frame, 1500);
@@ -3715,7 +3966,7 @@ bool hasLaunch() {
 // Launch, the mission, the rocket, then a T-minus countdown.
 bool showLaunch(long nowEpoch) {
   if (!hasLaunch()) return false;
-  showFrame("Launch", 1300);
+  showHeader("Launch");
   showFadeFrame(g_launch.mission, 1500);
   if (g_launch.rocket.length()) showFadeFrame(g_launch.rocket, 1500);
 
@@ -3775,7 +4026,7 @@ void fetchDaylight() {
 bool showDaylight(long) {
   if (g_dayLen[0] < 0 || g_dayLen[1] < 0) return false;
   char frame[16];
-  showFrame("Daylight", 1300);
+  showHeader("Daylight");
   snprintf(frame, sizeof(frame), "%ldh%02ldm", g_dayLen[0] / 3600, (g_dayLen[0] % 3600) / 60);
   showFrame(frame, 1500);
   long d    = g_dayLen[0] - g_dayLen[1];
@@ -4002,7 +4253,7 @@ void fetchWord() {
 // Word, the word, its part of speech, then the definition.
 bool showWord(long) {
   if (!g_word.valid) return false;
-  showFrame("Word", 1300);
+  showHeader("Word");
   showFadeFrame(g_word.word, 1800);
   if (g_word.pos.length()) showFrame(g_word.pos, 1300);
   showFadeFrame(g_word.def, 2000);
@@ -4182,7 +4433,7 @@ bool showSports(long nowEpoch) {
   const Team &t = g_teams[live[random(n)]];
 
   String vs = (t.home ? "vs " : "@ ") + t.opp;
-  showFrame(t.label, 1300);
+  showHeader(t.label);
   if (t.state == 'p') {
     showFrame(vs, 1500);
     time_t a = (time_t)t.start, b = (time_t)nowEpoch;
@@ -4505,7 +4756,7 @@ void fetchSonos() {
 // PLAYING, then who (artist / show) and what (song / episode).
 bool showSonos(long) {
   if (!g_sonos.valid) return false;
-  showFrame(center8("PLAYING"), 1300);
+  showHeader(center8("PLAYING"));
   if (g_sonos.who.length())  showFadeFrame(g_sonos.who, 1500);
   if (g_sonos.what.length()) showFadeFrame(g_sonos.what, 2000);
   return true;
@@ -4521,9 +4772,9 @@ bool showSonos(long) {
 // Michele's last shifts at MyEyeDoctor (2026). Retirement starts the day
 // after the last one.
 const uint8_t RETIRE_WORK_DAYS[][2] = {  // {month, day}
-  {10, 6}, {10, 8}, {10, 9}, {10, 16}, {10, 22}, {10, 23}, {10, 24}, {10, 27},
-  {10, 29}, {10, 30}, {11, 3}, {11, 5}, {11, 6}, {11, 7}, {11, 10}, {11, 19},
-  {11, 20}, {11, 21}, {11, 24},
+  {10, 6}, {10, 8}, {10, 9}, {10, 16}, {10, 20}, {10, 22}, {10, 23}, {10, 24},
+  {10, 27}, {10, 29}, {10, 30}, {11, 3}, {11, 5}, {11, 6}, {11, 7}, {11, 10},
+  {11, 19}, {11, 20}, {11, 21}, {11, 24},
 };
 #define RETIRE_YEAR 2026
 #define NUM_RETIRE_WORK_DAYS (sizeof(RETIRE_WORK_DAYS) / sizeof(RETIRE_WORK_DAYS[0]))
@@ -4758,7 +5009,10 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.1");
+  showText(" V 8.2");
+#if DEMO_TRANSITIONS
+  demoTransitions();
+#endif
 
   // get the stored Wifi credentials
   String ssid = preferences.getString("ssid", DEFAULT_SSID);
