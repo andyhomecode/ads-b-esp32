@@ -440,11 +440,11 @@ void showText(String text, int dpLocation = -1, int holdMs = 2000) {
 
 // Marquee whatever's past text's first 8 columns across at full brightness,
 // then hold the tail a second. No-op for text that already fits.
-void marqueeRest(const String &text) {
+void marqueeRest(const String &text, int marqueeMs = 200) {
   if (text.length() <= 8) return;
   for (int i = 1; i <= text.length() - 8; i++) {
     writeRawFrame(text.substring(i, i + 8), -1);
-    delay(200);
+    delay(marqueeMs);
   }
   g_frame = text.substring(text.length() - 8);
   delay(1000);
@@ -482,9 +482,9 @@ void fadeInOut(const String &text, int holdMs = 900) {
 // down in turn. This is the "every non-header field gets a proper
 // fade/slide transition, not a hard snap" treatment used everywhere data
 // (not a fixed label/tag) is shown -- showText() is for header tags only.
-void showFadeFrame(String text, int holdMs = 2000, int stepMs = 45) {
+void showFadeFrame(String text, int holdMs = 2000, int stepMs = 45, int marqueeMs = 200) {
   showFrame(text, holdMs, stepMs);  // first 8 columns
-  marqueeRest(text);
+  marqueeRest(text, marqueeMs);
 }
 
 
@@ -2348,6 +2348,194 @@ bool showMathQuiz(long) {
 
 // Boot-time demo: a run of quizzes. Set to 0 once they look right.
 #define DEMO_MATHQUIZ 0
+
+
+//  ____  _     _ _                       _
+// |  _ \| |__ (_) | ___  ___  ___  _ __ | |__  _   _
+// | |_) | '_ \| | |/ _ \/ __|/ _ \| '_ \| '_ \| | | |
+// |  __/| | | | | | (_) \__ \ (_) | |_) | | | | |_| |
+// |_|   |_| |_|_|_|\___/|___/\___/| .__/|_| |_|\__, |
+//                                 |_|          |___/
+//
+// The philosopher's name, then a short quote of theirs. Picked from Wikiquote
+// and Quotable, leaving out the famous misattributions ("We are what we
+// repeatedly do" is Will Durant's, "I know that I know nothing" a paraphrase).
+// Socrates' lines mostly come to us through Plato and Diogenes Laertius.
+struct PhiloQuote {
+  const char *who;
+  const char *text;
+};
+
+const PhiloQuote PHILO_QUOTES[] = {
+  {"Socrates", "The unexamined life is not worth living."},
+  {"Socrates", "I neither know nor think that I know."},
+  {"Socrates", "No evil can happen to a good man, either in life or after death."},
+  {"Socrates", "Philosophy begins in wonder."},
+  {"Socrates", "There is only one good, knowledge, and one evil, ignorance."},
+  {"Socrates", "Those who want fewest things are nearest to the gods."},
+  {"Socrates", "How many things I have no need of!"},
+  {"Socrates", "I am not an Athenian or a Greek, but a citizen of the world."},
+  {"Socrates", "Bad men live that they may eat and drink, whereas good men eat and drink that they may live."},
+  {"Socrates", "Anyone who holds a true opinion without understanding is like a blind man on the right road."},
+  {"Socrates", "False words are not only evil in themselves, but they infect the soul with evil."},
+  {"Socrates", "There is no greater evil one can suffer than to hate reasonable discourse."},
+  {"Socrates", "One should never do wrong in return, no matter how one has been wronged."},
+  {"Socrates", "The hour of departure has arrived, and we go our ways - I to die, and you to live. Which is better God only knows."},
+  {"Socrates", "Crito, we owe a cock to Asclepius. Pay it and do not neglect it."},
+  {"Socrates", "The man who eats with the greatest appetite has the least need of delicacies."},
+
+  {"Plato", "The beginning is the most important part of the work."},
+  {"Plato", "At the touch of love everyone becomes a poet."},
+  {"Plato", "I shall assume that your silence gives consent."},
+  {"Plato", "No one should be discouraged who can make constant progress, even though it be slow."},
+  {"Plato", "Friends have all things in common."},
+  {"Plato", "May I consider the wise man rich."},
+  {"Plato", "Grant that I may be beautiful inside."},
+  {"Plato", "Perception and knowledge could never be the same."},
+  {"Plato", "There are three classes of men: lovers of wisdom, lovers of honor, lovers of gain."},
+  {"Plato", "Wisdom alone is the science of other sciences."},
+  {"Plato", "Knowledge acquired under compulsion obtains no hold on the mind."},
+  {"Plato", "The punishment of the wise who refuse to take part in government is to live under the government of worse men."},
+  {"Plato", "Pleasure, the greatest incitement to evil."},
+  {"Plato", "The very rich are not good."},
+  {"Plato", "Excess generally causes reaction, and produces a change in the opposite direction."},
+
+  {"Aristotle", "All men by nature desire to know."},
+  {"Aristotle", "Man is by nature a political animal."},
+  {"Aristotle", "One swallow does not make a summer."},
+  {"Aristotle", "Nature does nothing in vain."},
+  {"Aristotle", "For the things we have to learn before we can do, we learn by doing."},
+  {"Aristotle", "What it lies in our power to do, it lies in our power not to do."},
+  {"Aristotle", "Hope is the dream of a waking man."},
+  {"Aristotle", "A friend is one soul abiding in two bodies."},
+  {"Aristotle", "Without friends no one would choose to live, though he had all other goods."},
+  {"Aristotle", "Wit is cultured insolence."},
+  {"Aristotle", "Evils draw men together."},
+  {"Aristotle", "Misfortune shows those who are not really friends."},
+  {"Aristotle", "Change in all things is sweet."},
+  {"Aristotle", "We are busy that we may have leisure, and make war that we may live in peace."},
+  {"Aristotle", "The roots of education are bitter, but the fruit is sweet."},
+  {"Aristotle", "Homer has taught all other poets the art of telling lies skillfully."},
+  {"Aristotle", "A convincing impossibility is preferable to an unconvincing possibility."},
+  {"Aristotle", "A whole is that which has beginning, middle, and end."},
+  {"Aristotle", "The whole is something besides the parts."},
+  {"Aristotle", "Liars, when they speak the truth, are not believed."},
+  {"Aristotle", "The least initial deviation from the truth is multiplied later a thousandfold."},
+  {"Aristotle", "Our characters are the result of our conduct."},
+  {"Aristotle", "Poetry is finer and more philosophical than history."},
+  {"Aristotle", "Piety requires us to honor truth above our friends."},
+
+  {"Spinoza", "All things excellent are as difficult as they are rare."},
+  {"Spinoza", "I have laboured carefully, not to mock, lament, or execrate human actions, but to understand them."},
+  {"Spinoza", "Peace is not mere absence of war, but is a virtue that springs from force of character."},
+  {"Spinoza", "A free man thinks of death least of all things; and his wisdom is a meditation not of death but of life."},
+  {"Spinoza", "We feel and know that we are eternal."},
+  {"Spinoza", "God, or Nature."},
+  {"Spinoza", "Extreme pride or dejection indicates extreme ignorance of self."},
+  {"Spinoza", "My purpose is to explain, not the meaning of words, but the nature of things."},
+  {"Spinoza", "Truth is a standard both of itself and of falsity."},
+  {"Spinoza", "Nature is satisfied with little; and if she is, I am also."},
+  {"Spinoza", "He who seeks equality between unequals seeks an absurdity."},
+  {"Spinoza", "He who tries to determine everything by law will foment crime rather than lessen it."},
+  {"Spinoza", "Men conceive of men not as they are, but as they themselves would like them to be."},
+  {"Spinoza", "If slavery, barbarism and desolation are to be called peace, men can have no worse misfortune."},
+  {"Spinoza", "One truth cannot conflict with another."},
+};
+#define NUM_PHILO_QUOTES (sizeof(PHILO_QUOTES) / sizeof(PHILO_QUOTES[0]))
+
+bool showPhilosophy(long) {
+  const PhiloQuote &q = PHILO_QUOTES[random(NUM_PHILO_QUOTES)];
+  String who = q.who;
+  if (who.length() <= 8) showHeader(center8(who));
+  else scrollAcross(who);  // Aristotle is one column too wide
+  showFadeFrame(q.text, 1500);
+  return true;
+}
+
+
+//  ____                    _____ _                       _     _
+// |  _ \  ___  ___ _ __   |_   _| |__   ___  _   _  __ _| |__ | |_ ___
+// | | | |/ _ \/ _ \ '_ \    | | | '_ \ / _ \| | | |/ _` | '_ \| __/ __|
+// | |_| |  __/  __/ |_) |   | | | | | | (_) | |_| | (_| | | | | |_\__ \
+// |____/ \___|\___| .__/    |_| |_| |_|\___/ \__,_|\__, |_| |_|\__|___/
+//                 |_|                              |___/
+//
+// Jack Handey's Deep Thoughts: DEEP / THOUGHTS, the thought scrolling, then
+// the byline riding through. From pixeljoint.com's Handey page and Goodreads.
+const char *const HANDEY_QUOTES[] = {
+  "Instead of studying for finals, what about just going to the Bahamas and catching some rays? Maybe you'll flunk, but you might have flunked anyway; that's my point.",
+  "Too bad when I was a kid there wasn't a guy in our class that everybody called the \"Cricket Boy\", because I would have liked to stand up in class and tell everybody, \"You can make fun of the Cricket Boy if you want to, but to me he's just like everybody else.\" Then everybody would leave the Cricket Boy alone, and I'd invite him over to spend the night at my house, but after about five minutes of that loud chirping I'd have to kick him out. Maybe later we could get up a petition to get the Cricket Family run out of town. Bye, Cricket Boy.",
+  "Marta was watching the football game with me when she said, \"You know, most of these sports are based on the idea of one group protecting its territory from invasion by another group.\" \"Yeah,\" I said, trying not to laugh. Girls are funny.",
+  "I hope, when they die, cartoon characters have to answer for their sins.",
+  "When the chairman introduced the guest speaker as a former illegal alien, I got up from my chair and yelled, \"What's the matter, no jobs on Mars?\" When no one laughed, I was real embarrassed. I don't think people should make you feel that way.",
+  "I guess more bad things have been done in the name of progress than any other. I myself have been guilty of this. When I was a teenager, I stole a car and drove it out into the desert and set it on fire. When the police showed up, I just shrugged and said, \"Hey, progress.\" Boy, did I have a lot to learn.",
+  "When the age of the Vikings came to a close, they must have sensed it. Probably, they gathered together one evening, slapped each other on the back and said, \"Hey, good job.\"",
+  "In weightlifting, I don't think sudden, uncontrolled urination should automatically disqualify you.",
+  "I'd rather be rich than stupid.",
+  "I guess we were all guilty, in a way. We all shot him, we all skinned him, and we all got a complimentary bumper sticker that read, \"I helped skin Bob.\"",
+  "If you were a poor Indian with no weapons, and a bunch of conquistadors came up to you and asked where the gold was, I don't think it would be a good idea to say, \"I swallowed it. So sue me.\"",
+  "Here's a good joke to do during an earthquake: straddle a big crack in the ground, and if it opens wider, go \"Whoa! Whoa!\" and flail your arms around, like you're going to fall in.",
+  "If you ever discover that what you're seeing is a play within a play, just slow down, take a deep breath, and hold on for the ride of your life.",
+  "Perhaps, if I am very lucky, the feeble efforts of my lifetime will someday be noticed, and maybe, in some small way, they will be acknowledged as the greatest works of genius ever created by Man.",
+  "At first I thought, if I were Superman, a perfect secret identity would be \"Clark Kent, Dentist,\" because you could save money on tooth X-rays. But then I thought, if a patient said, \"How's my back tooth?\" and you just looked at it with your X-ray vision and said, \"Oh it's okay,\" then the patient would probably say, \"Aren't you going to take an X-ray, stupid?\" and you'd say, \"I did,\" and then he probably wouldn't even pay his bill.",
+  "When you're going up the stairs and you take a step, kick the other leg up high behind you to keep people from following too close.",
+  "Too bad Lassie didn't know how to ice skate, because then if she was in Holland on vacation in winter and someone said \"Lassie, go skate for help,\" she could do it.",
+  "If I lived in the Wild West days, instead of carrying a six-gun in my holster, I'd carry a soldering iron. That way, if some smart-aleck cowboy said something like, \"Hey look. He's carrying a soldering iron!\" and started laughing, and everybody else started laughing, I could just say, \"That's right, it's a soldering iron. The soldering iron of justice.\" Then everyone would get real quiet and ashamed, because they made fun of the soldering iron of justice, and I could probably hit them up for a free drink.",
+  "When I think back on all the blessings I have been given in my life, I can't think of a single one, unless you count that rattlesnake that granted me all those wishes.",
+  "I hope in the future Americans are thought of as a warlike, vicious people, because I bet a lot of high schools would pick 'Americans' as their mascot.",
+  "If you're a horse, and someone gets on you, and falls off, and then gets right back on you, I think you should buck him off right away.",
+  "I'd like to see a nude opera, because when they hit those really high notes, I bet you can really see it in those genitals.",
+  "The memories of my family outings are still a source of strength to me. I remember we'd all pile into the car - I forget what kind it was - and drive and drive. I'm not sure where we'd go, but I think there were some trees there. The smell of something was strong in the air as we played whatever sport we played. I remember a bigger, older guy we called \"Dad.\" We'd eat some stuff, or not, and then I think we went home. I guess some things never leave you.",
+  "If a kid asks where rain comes from, I think a cute thing to tell him is \"God is crying.\" And if he asks why God is crying, another cute thing to tell him is \"probably because of something you did.\"",
+  "Contrary to what most people say, the most dangerous animal in the world is not the lion or the tiger or even the elephant. It's a shark riding on an elephant's back, just trampling and eating everything they see.",
+  "As we were driving, we saw a sign that said, \"Watch for Rocks.\" Martha said it should read \"Watch for Pretty Rocks.\" I told her she should write in her suggestion to the highway department, but she started saying it was a joke - just to get out of writing a simple letter! And I thought I was lazy!",
+  "One thing kids like is to be tricked. For instance, I was going to take my little nephew to Disneyland, but instead I drove him to an old burned-out warehouse. \"Oh, no,\" I said, \"Disneyland burned down.\" He cried and cried, but I think deep down he thought it was a pretty good joke. I started to drive over to the real Disneyland, but it was getting pretty late.",
+  "If you saw two guys named Hambone and Flipper, which one would you think liked dolphins the most? I'd say Flipper, wouldn't you? You'd be wrong, though. It's Hambone.",
+  "I wish a robot would get elected president. That way, when he came to town, we could all take a shot at him and not feel too bad.",
+  "As the evening sky faded from a salmon color to a sort of flint gray, I thought back to the salmon I caught that morning, and how gray he was, and how I named him Flint.",
+  "I think people tend to forget that trees are living creatures. They're sort of like dogs. Huge, quiet, motionless dogs, with bark instead of fur.",
+  "Martha says the interesting thing about fly fishing is that it's two lives connected by a thin strand. Come on, Martha. Grow up.",
+  "If I ever do a book on the Amazon, I hope I am able to bring a lightheartedness to the subject, in a way that tells the reader we are going to have fun with this thing.",
+  "If you're at a Thanksgiving dinner, but you don't like the stuffing or the cranberry sauce or anything else, just pretend like you're eating it, but instead, put it all in your lap and form it into a big mushy ball. Then, later, when you're out back having cigars with the boys, let out a big fake cough and throw the ball to the ground. Then say, \"Boy, these are good cigars!\"",
+  "Is there anything more beautiful than a beautiful, beautiful flamingo, flying across in front of a beautiful sunset? And he's carrying a very beautiful rose in his beak, and also he's carrying a very beautiful painting with his feet. And also, you're drunk.",
+  "Too bad there's not such a thing as a golden skunk, because you'd probably be proud to be sprayed by one.",
+  "To me, truth is not some vague, foggy notion. Truth is real. And, at the same time, unreal. Fiction and fact and everything in between, plus some things I can't remember, all rolled into one big 'thing'. This is truth, to me.",
+  "I bet a fun thing would be to go way back in time to where there was going to be an eclipse and tell the cave men, \"If I have come to destroy you, may the sun be blotted out from the sky.\" Just then the eclipse would start, and they'd probably try to kill you or something, but then you could explain about the rotation of the moon and all, and everyone would get a good laugh.",
+  "I think somebody should come up with a way to breed a very large shrimp. That way, you could ride him, then after you camped at night, you could eat him. How about it, science?",
+  "A man doesn't automatically get my respect. He has to get down in the dirt and beg for it.",
+  "Fear can sometimes be a useful emotion. For instance, let's say you're an astronaut on the moon and you fear that your partner has been turned into Dracula. The next time he goes out for the moon pieces, wham!, you just slam the door behind him and blast off. He might call you on the radio and say he's not Dracula, but you just say, \"Think again, bat man.\"",
+  "I think in one of my previous lives I was a mighty king, because I like people to do what I say.",
+  "I bet for an Indian, shooting an old fat pioneer woman in the back with an arrow, and she fires her shotgun into the ground as she falls over, is like the top thing you can do.",
+  "I think a good movie would be about a guy who's a brain scientist, but he gets hit on the head and it damages the part of the brain that makes you want to study the brain.",
+  "I wouldn't be surprised if someday some fisherman caught a big shark and cut it open, and there inside was a whole person. Then they cut the person open, and in him is a little baby shark. And in the baby shark there isn't a person, because it would be too small. But there's a little doll or something, like a Johnny Combat little toy guy--something like that.",
+  "It makes me mad when I go to all the trouble of having Martha cook up about a hundred drumsticks, then the guy at the Marineland says, \"You can't throw chicken to the dolphins. They eat fish.\" Sure they eat fish, if that's all you give them. Man, wise up.",
+  "I wish scientists would come up with a way to make dogs a lot bigger, but with a smaller head. That way, they'd still be good as watchdogs, but they wouldn't eat as much.",
+  "If you had a school for professional fireworks people, I don't think you could cover fuses in just one class. It's just too rich a subject.",
+  "People think it would be fun to be a bird because you could fly. But they forget the negative side, which is the preening.",
+  "Of all the imaginary friends I've had, I don't think there was one that I didn't end up having to kill.",
+  "Before you criticize someone, you should walk a mile in their shoes. That way when you criticize them, you are a mile away from them and you have their shoes.",
+  "If trees could scream, would we be so cavalier about cutting them down? We might, if they screamed all the time, for no good reason.",
+  "If you ever drop your keys into a river of molten lava, let 'em go, because, man, they're gone.",
+  "Sometimes I think the world has gone completely mad. And then I think, \"Aw, who cares?\" And then I think, \"Hey, what's for supper?\"",
+  "If you think a weakness can be turned into a strength, I hate to tell you this, but that's another weakness.",
+  "I hope life isn't a big joke, because I don't get it.",
+  "During the Middle Ages, probably one of the biggest mistakes was not putting on your armor because you were \"just going down to the corner.\"",
+  "It takes a big man to cry, but it takes a bigger man to laugh at that man.",
+  "You know what would make a good story? Something about a clown who makes people happy, but inside he's real sad. Also, he has severe diarrhea.",
+  "Consider the daffodil. And while you're doing that, I'll be over here, looking through your stuff.",
+};
+#define NUM_HANDEY_QUOTES (sizeof(HANDEY_QUOTES) / sizeof(HANDEY_QUOTES[0]))
+
+bool showDeepThought(long) {
+  showHeader(center8("DEEP"), 700);
+  showHeader("THOUGHTS");
+  // Past 150 characters the marquee speeds up to keep it near 30s, down to
+  // 110ms a column for the longest.
+  const char *q = HANDEY_QUOTES[random(NUM_HANDEY_QUOTES)];
+  showFadeFrame(q, 1500, 45, constrain(30000 / (int)strlen(q), 110, 200));
+  scrollAcross("Jack Handey-");
+  return true;
+}
 
 
 //  __  __
@@ -5106,7 +5294,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.4");
+  showText(" V 8.5");
 #if DEMO_TRANSITIONS
   demoTransitions();
 #endif
@@ -5202,6 +5390,8 @@ const Feed FEEDS[] = {
   { 2,  "horoscope",   showHoroscope,  hasHoroscope,                              fetchHoroscopes, HOROSCOPE_REFETCH_MS },
   { 1,  "magic 8",     showMagic8,     [] { return true; },                       nullptr,         0 },
   { 2,  "math quiz",   showMathQuiz,   [] { return true; },                       nullptr,         0 },
+  { 2,  "philosophy",  showPhilosophy, [] { return true; },                       nullptr,         0 },
+  { 1,  "handey",      showDeepThought, [] { return true; },                      nullptr,         0 },
 };
 #define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
 

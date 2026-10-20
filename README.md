@@ -126,6 +126,10 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 - **Math quiz**: `MATHQUIZ`, then a times-table, division, addition,
   subtraction or `PRIME?` problem that pulses while you think, and the answer
   slides in after it.
+- **Philosophy**: a Socrates, Plato, Aristotle or Spinoza header, then one of
+  their short quotes. Stored on the device.
+- **Deep Thoughts**: `DEEP` / `THOUGHTS`, one of 60 Jack Handey quotes
+  scrolling, then `Jack Handey-`. Weight 1.
 - **Magic 8 Ball**: a pulsing `<8-BALL>` intro, then a random answer
   (upbeat or silly) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
@@ -666,6 +670,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.5
+ - Oct 19, 2026
+ - Philosophy feed: short quotes from Socrates, Plato, Aristotle and Spinoza.
+ - Deep Thoughts feed: Jack Handey quotes, at low frequency.
  - version 8.4
  - Oct 19, 2026
  - Night dimming: midnight to 6am, never above minimum brightness. `DEMO_NIGHT_DIM` forces it on.
