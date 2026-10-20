@@ -302,6 +302,9 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 //   uptown   -- an up arrowhead   "/|\" in the bottom half (N + M + L)
 //   top bar  -- the crest of the tide banner's wave, over '-' and '_'; the bus roof
 //   wheel    -- the bus roof over a small 'o'
+//   bike     -- three columns: a wheel with a stay rising to the seat, the frame
+//               (top tube over a Y down to the pedals), a wheel under the fork
+//   doors    -- a train car's set of doors: a closed frame split down the middle
 #define GLYPH_DOWN   (ALPHANUM_SEG_H | ALPHANUM_SEG_J | ALPHANUM_SEG_K)
 #define GLYPH_UP     (ALPHANUM_SEG_N | ALPHANUM_SEG_M | ALPHANUM_SEG_L)
 #define GLYPH_TOP    ALPHANUM_SEG_A
@@ -309,6 +312,16 @@ bool g_wifiConnected = false;  // global variable to show WiFi state
 #define GLYPH_UP_CH   '\x02'
 #define GLYPH_TOP_CH  '\x03'
 #define GLYPH_WHEEL_CH '\x04'
+#define GLYPH_BIKE_REAR  (ALPHANUM_SEG_K)
+#define GLYPH_BIKE_FRAME (ALPHANUM_SEG_A | ALPHANUM_SEG_H | ALPHANUM_SEG_K | ALPHANUM_SEG_M)
+#define GLYPH_BIKE_FRONT (ALPHANUM_SEG_H)
+#define GLYPH_BIKE_REAR_CH  '\x05'
+#define GLYPH_BIKE_FRAME_CH '\x06'
+#define GLYPH_BIKE_FRONT_CH '\x07'
+#define BIKE "\x05\x06\x07"
+#define GLYPH_DOORS (ALPHANUM_SEG_A | ALPHANUM_SEG_B | ALPHANUM_SEG_C | ALPHANUM_SEG_D | \
+                     ALPHANUM_SEG_E | ALPHANUM_SEG_F | ALPHANUM_SEG_J | ALPHANUM_SEG_M)
+#define GLYPH_DOORS_CH '\x08'
 
 
 // Font lookup only -- never begun, so it never touches the bus. The library's
@@ -321,6 +334,10 @@ uint16_t glyphFor(char c) {
   if (c == GLYPH_UP_CH)   return GLYPH_UP;
   if (c == GLYPH_TOP_CH)  return GLYPH_TOP;
   if (c == GLYPH_WHEEL_CH) return glyphFor('o') | GLYPH_TOP;
+  if (c == GLYPH_BIKE_REAR_CH)  return glyphFor('o') | GLYPH_BIKE_REAR;
+  if (c == GLYPH_BIKE_FRAME_CH) return GLYPH_BIKE_FRAME;
+  if (c == GLYPH_BIKE_FRONT_CH) return glyphFor('o') | GLYPH_BIKE_FRONT;
+  if (c == GLYPH_DOORS_CH)      return GLYPH_DOORS;
   g_fontLookup.writeDigitAscii(0, c);
   return g_fontLookup.displaybuffer[0];
 }
@@ -450,17 +467,22 @@ void marqueeRest(const String &text, int marqueeMs = 200) {
   delay(1000);
 }
 
-// A banner that rides all the way through: in from past the right edge,
-// across at full brightness, and off the left, pushing whatever was showing
-// ahead of it. Leaves the display blank for the next frame to slide in.
-void scrollAcross(const String &text, int stepMs = 110) {
+// A banner that rides in from past the right edge at full brightness,
+// pushing whatever was showing ahead of it, and parks its last 8 columns.
+void scrollIn(const String &text, int stepMs = 110) {
   fadeBrightnessBoth(BRIGHT_FULL, 8);
-  String buf = g_frame + text + "        ";
+  String buf = g_frame + text;
   for (int i = 1; i <= (int)buf.length() - 8; i++) {
     writeRawFrame(buf.substring(i, i + 8), -1);
     delay(stepMs);
   }
-  g_frame = "        ";
+  g_frame = buf.substring(buf.length() - 8);
+}
+
+// scrollIn(), but all the way through and off the left. Leaves the display
+// blank for the next frame to slide in.
+void scrollAcross(const String &text, int stepMs = 110) {
+  scrollIn(text + "        ", stepMs);
 }
 
 // A banner that fades up in place, holds, and fades back out, leaving the
@@ -1162,14 +1184,23 @@ void fetchTrains() {
   http.end();
 }
 
-// The whole train display pass: one "E B'WAY" station frame, then every cached
+// The station name rides through, roofed over, mid the lead car of a two-car
+// train built like the bus from roof and wheel glyphs, coupled with "--"; the
+// second car gets two sets of doors.
+// (Split literals: "\x03E" would parse as one hex escape.)
+void showTrainHeader() {
+  scrollAcross("  [\x04\x03\x03\x03" "E B'WAY" "\x03\x03\x03\x04]--"
+               "[\x04\x03\x08\x03\x03\x03\x03\x08\x03\x04]", 160);
+}
+
+// The whole train display pass: one "E B'WAY" train header, then every cached
 // arrival (both directions, already sorted soonest-first) as "Fv YYmin" (~2s) /
 // "Fv  NOW" when it's basically here -- the glyph after the F is the direction
 // (down arrowhead "\|/" up top = downtown, up arrowhead "/|\" low = uptown).
 // A single "NO F TRN" if nothing's running.
 bool showArrivals(long nowEpoch) {
   if (!g_haveTrainData) return false;
-  showFrame("E B'WAY", 500);
+  showTrainHeader();
 
   if (g_trainCount == 0) {
     showFrame("NO F TRN", 1400);
@@ -1817,11 +1848,23 @@ void fetchCitibike() {
   progEnd('*');
 }
 
+// A bike rides in ahead of the name, which parks and gets an arrow through it.
+void showCitibikeHeader() {
+  scrollIn("   " BIKE "    CitiBike", 160);
+  delay(300);
+  arrowHighlight("CitiBike", true, 80);
+  delay(1000);
+}
+
+// Boot-time demo: the train and Citi Bike headers, three times over. Set to 0
+// once they look right.
+#define DEMO_HEADERS 0
+
 // Header, then two frames, same cadence as a bus arrival: bike count then
 // dock count.
 bool showCitibike(long) {
   if (g_citibikeBikes < 0) return false;  // no reading yet
-  showHeader("CitiBike");
+  showCitibikeHeader();
   char frame[16];
   snprintf(frame, sizeof(frame), "%ld bikes", g_citibikeBikes);
   showFrame(frame, 1300);
@@ -5294,12 +5337,18 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.5");
+  showText(" V 8.6");
 #if DEMO_TRANSITIONS
   demoTransitions();
 #endif
 #if DEMO_MATHQUIZ
   for (int i = 0; i < 15; i++) showMathQuiz(0);
+#endif
+#if DEMO_HEADERS
+  for (int i = 0; i < 3; i++) {
+    showTrainHeader();
+    showCitibikeHeader();
+  }
 #endif
 
   // get the stored Wifi credentials

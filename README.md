@@ -13,8 +13,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
 
 ## Features
 
-- **Next-train countdown, both directions in one list**: a single `E B'WAY`
-  station frame, then the next few F trains **either way, sorted soonest-first**.
+- **Next-train countdown, both directions in one list**: an `E B'WAY` header
+  drawn as a two-car train rolling through, then the next few F trains **either way, sorted soonest-first**.
   Each frame is `F<dir> YYmin` — `<dir>` is a custom 14-segment glyph right after
   the `F`: a down arrowhead (`\|/`) in the top half for downtown (Brooklyn), an
   up arrowhead (`/|\`) in the bottom half for uptown. So `Fv  2min`, `F^  3min`,
@@ -83,7 +83,8 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   every 10 min; needs the NTP clock for the 24 h window. Nothing otherwise.
 - **Citi Bike**: bikes and docks available at Clinton St & Grand St, summed
   across the two station IDs Citi Bike splits that corner into (a main rack
-  and a smaller overflow rack). A `CitiBike` header, then bike count and dock
+  and a smaller overflow rack). A bike rides in ahead of a `CitiBike`
+  header, an arrow shoots through it, then bike count and dock
   count: `57 bikes`, `6 docks`. Checked every 30s; nothing shown until the
   first reading comes back.
 - **ISS overhead**: a fun ping — `ISS OVER` scrolls in, cycling alongside the
@@ -670,6 +671,10 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.6
+ - Oct 19, 2026
+ - Train header: `E B'WAY` rolls through as a two-car train, like the bus.
+ - Citi Bike header: a three-column bike glyph rides in ahead of `CitiBike`. `DEMO_HEADERS` shows both at boot.
  - version 8.5
  - Oct 19, 2026
  - Philosophy feed: short quotes from Socrates, Plato, Aristotle and Spinoza.
