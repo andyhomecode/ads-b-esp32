@@ -123,6 +123,9 @@ Waaaay too much info to be useful on a 8-character display, but why not.
   [sunrise-sunset.org](https://sunrise-sunset.org/).
 - **Tide**: `High` or `Low` then the next tide's time and height
   (`3-45pm 5.2ft`), from NOAA's predictions for The Battery, NY.
+- **Math quiz**: `MATHQUIZ`, then a times-table, division, addition,
+  subtraction or `PRIME?` problem that pulses while you think, and the answer
+  slides in after it.
 - **Magic 8 Ball**: a pulsing `<8-BALL>` intro, then a random answer
   (upbeat or silly) scrambles in through segment noise and scrolls.
 - **Next holiday**: a `Holiday` header, the next US public holiday that's actually observed here
@@ -652,6 +655,9 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.3
+ - Oct 19, 2026
+ - Math quiz feed: multiply, divide, add, subtract, or pick the prime. `DEMO_MATHQUIZ` runs 15 at boot.
  - version 8.2
  - Oct 19, 2026
  - Headers land through random transitions (shutter, wipe, ripple, pistons, morph); full-width ones get an arrow highlight. `__AIR__` scrambles; `WX Now` is `Weather`.

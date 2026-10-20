@@ -500,6 +500,15 @@ void shakeText(const String &s, int holdMs = 1200) {
   delay(holdMs);
 }
 
+// Fade all the way down and back up to full, twice -- like NEWS, but it
+// ends at full.
+void pulse() {
+  for (int i = 0; i < 2; i++) {
+    fadeBrightnessBoth(0, 30);
+    fadeBrightnessBoth(BRIGHT_FULL, 30);
+  }
+}
+
 void blink(bool blinkOn) {
 
   if (blinkOn) {
@@ -2244,6 +2253,80 @@ bool showMagic8(long) {
   showNoiseFrame(MAGIC8_ANSWERS[random(NUM_MAGIC8_ANSWERS)], 1500);
   return true;
 }
+
+
+//  __  __       _   _        ___        _
+// |  \/  | __ _| |_| |__    / _ \ _   _(_)____
+// | |\/| |/ _` | __| '_ \  | | | | | | | |_  /
+// | |  | | (_| | |_| | | | | |_| | |_| | |/ /
+// |_|  |_|\__,_|\__|_| |_|  \__\_\\__,_|_/___|
+//
+// MATHQUIZ, the kind of problem, the problem, a pause to guess, then the
+// answer slides in after it. Times tables and division stick to 1-12, addition and
+// subtraction to 0-200 (never negative); PRIME? pits a two-digit prime against
+// a two-digit odd number that isn't one, then shows what the other factors to.
+bool isPrime(int n) {
+  if (n < 2) return false;
+  for (int d = 2; d * d <= n; d++) if (n % d == 0) return false;
+  return true;
+}
+
+// A random odd two-digit number that is (or isn't) prime.
+int oddTwoDigit(bool prime) {
+  int n;
+  do n = 2 * random(5, 50) + 1; while (isPrime(n) != prime);
+  return n;
+}
+
+// "7 X 8", or "200+200" when the spaces won't fit in 8 columns.
+String quizProblem(int a, const char *op, int b) {
+  String spaced = String(a) + " " + op + " " + String(b);
+  return spaced.length() <= 8 ? spaced : String(a) + op + String(b);
+}
+
+bool showMathQuiz(long) {
+  showHeader("MATHQUIZ");
+  String kind, problem, answer, note;
+  int a = random(1, 13), b = random(1, 13);
+  switch (random(5)) {
+    case 0:
+      kind = "MULTIPLY", problem = quizProblem(a, "X", b), answer = String(a * b);
+      break;
+    case 1:
+      kind = "DIVISION", problem = quizProblem(a * b, "/", b), answer = String(a);
+      break;
+    case 2:
+      a = random(0, 201), b = random(0, 201);
+      kind = "ADDITION", problem = quizProblem(a, "+", b), answer = String(a + b);
+      break;
+    case 3:
+      a = random(0, 201), b = random(0, 201);
+      if (a < b) std::swap(a, b);
+      kind = "SUBTRACT", problem = quizProblem(a, "-", b), answer = String(a - b);
+      break;
+    default: {
+      int prime = oddTwoDigit(true), odd = oddTwoDigit(false), d = 3;
+      while (odd % d) d += 2;
+      kind = "PRIME?";
+      problem = random(2) ? String(prime) + " or " + odd : String(odd) + " or " + prime;
+      answer = String(prime);
+      note = String(odd) + "=" + d + "X" + (odd / d);  // "51=3X17"
+      break;
+    }
+  }
+  showFrame(center8(kind), 1300);
+  showFrame(center8(problem), 1500);
+  for (int i = 0; i < 2; i++) {  // about 7s to think
+    pulse();
+    delay(1000);
+  }
+  showFrame(center8("= " + answer), 4000);
+  if (note.length()) showFrame(center8(note), 3500);
+  return true;
+}
+
+// Boot-time demo: a run of quizzes. Set to 0 once they look right.
+#define DEMO_MATHQUIZ 0
 
 
 //  __  __
@@ -4818,13 +4901,6 @@ bool showRetirement(long nowEpoch) {
   fadeBrightnessBoth(BRIGHT_FULL, 8);
   noiseMorph(g_frame, retired, -1, 24, 40);
   g_frame = retired;
-  auto pulse = []() {  // like NEWS, but ends at full
-    for (int i = 0; i < 2; i++) {
-      fadeBrightnessBoth(0, 30);
-      fadeBrightnessBoth(BRIGHT_FULL, 30);
-    }
-  };
-
   shakeText("RETIRED", 0);
   pulse();
   showFrame(days, 1500);
@@ -5009,9 +5085,12 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.2");
+  showText(" V 8.3");
 #if DEMO_TRANSITIONS
   demoTransitions();
+#endif
+#if DEMO_MATHQUIZ
+  for (int i = 0; i < 15; i++) showMathQuiz(0);
 #endif
 
   // get the stored Wifi credentials
@@ -5101,6 +5180,7 @@ const Feed FEEDS[] = {
   { 1,  "word",        showWord,       [] { return g_word.valid; },               fetchWord,       WOTD_REFETCH_MS },
   { 2,  "horoscope",   showHoroscope,  hasHoroscope,                              fetchHoroscopes, HOROSCOPE_REFETCH_MS },
   { 1,  "magic 8",     showMagic8,     [] { return true; },                       nullptr,         0 },
+  { 2,  "math quiz",   showMathQuiz,   [] { return true; },                       nullptr,         0 },
 };
 #define NUM_FEEDS (sizeof(FEEDS) / sizeof(FEEDS[0]))
 
