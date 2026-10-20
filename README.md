@@ -646,6 +646,17 @@ degrades to "shows one extra noisy category" at worst. If a future alert
 type turns out to be similarly noisy, add its category here rather than
 inverting the filter.
 
+## Ideas
+
+- **Print button**: a momentary button (GPIO 14 to GND, `INPUT_PULLUP`) that
+  prints a summary of the cached feeds (trains, weather, plane, Sonos,
+  horoscope) on the Epson TM receipt printer at `192.168.1.16`. Send raw
+  ESC/POS over TCP port 9100. Use an interrupt flag so a press isn't missed
+  while a display animation is running.
+- **USB keyboard instead**: the S3's native USB port can act as a USB host for a
+  keyboard or keypad, with one key per printout or a type-and-print mode.
+  Check whether that port supplies 5V to the keyboard.
+
 ## License
 
 This project is open-source. See the original repository for licensing details.
