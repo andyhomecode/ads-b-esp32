@@ -666,6 +666,9 @@ This project is open-source. See the original repository for licensing details.
 Feel free to submit issues or pull requests for improvements!
 
 ## Version
+ - version 8.4
+ - Oct 19, 2026
+ - Night dimming: midnight to 6am, never above minimum brightness. `DEMO_NIGHT_DIM` forces it on.
  - version 8.3
  - Oct 19, 2026
  - Math quiz feed: multiply, divide, add, subtract, or pick the prime. `DEMO_MATHQUIZ` runs 15 at boot.

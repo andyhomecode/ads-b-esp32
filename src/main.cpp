@@ -356,10 +356,31 @@ String g_frame = "        ";
 // (e.g. the dim loading clock) instead of snapping to full first.
 uint8_t g_bright = BRIGHT_FULL;
 
+// Night dimming: midnight to 6am local, nothing goes above BRIGHT_MIN. Needs
+// NTP (and the TZ set after it); before that it's never night.
+#define NIGHT_START_HOUR 0
+#define NIGHT_END_HOUR   6
+// Treat every hour as night, to check it by day. Set to 0 once it looks right.
+#define DEMO_NIGHT_DIM 0
+
+bool isNight() {
+#if DEMO_NIGHT_DIM
+  return true;
+#endif
+  time_t t = time(nullptr);
+  if (t < 1700000000L) return false;
+  struct tm tmNow;
+  localtime_r(&t, &tmNow);
+  return tmNow.tm_hour >= NIGHT_START_HOUR && tmNow.tm_hour < NIGHT_END_HOUR;
+}
+
+// g_bright keeps the requested level, so fades still take their usual time;
+// only what reaches the backpacks is capped at night.
 void setBrightnessBoth(uint8_t b) {
   g_bright = b;
-  alpha4_0.setBrightness(b);
-  alpha4_1.setBrightness(b);
+  uint8_t hw = isNight() && b > BRIGHT_MIN ? BRIGHT_MIN : b;
+  alpha4_0.setBrightness(hw);
+  alpha4_1.setBrightness(hw);
 }
 
 // Ramp from the current brightness to `to`, one level per stepMs.
@@ -5085,7 +5106,7 @@ void setup() {
   // title screen
   showText("github.com/andyhomecode/ads-b-esp32");
   showText("Andy's Bullshit Display");
-  showText(" V 8.3");
+  showText(" V 8.4");
 #if DEMO_TRANSITIONS
   demoTransitions();
 #endif
